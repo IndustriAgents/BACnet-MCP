@@ -7,13 +7,16 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from io import TextIOWrapper
+from typing import Any
 
 import anyio
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.stdio import stdio_server
+from pydantic import ValidationError
 
 from .bacnet_client import BACnetClient
-from .tools import ObjectMap, ToolConfig, ToolResources, register_tools
+from .tools import ObjectMap, ToolConfig, ToolResources, fail, register_tools
 
 
 @dataclass(slots=True)
@@ -21,13 +24,35 @@ class AppContext:
     client: BACnetClient
 
 
-class _StdioFastMCP(FastMCP):
-    """FastMCP whose stdout carries nothing but JSON-RPC.
+def describe_validation_error(exc: ValidationError) -> str:
+    problems = []
+    for error in exc.errors():
+        where = ".".join(str(part) for part in error.get("loc", ())) or "arguments"
+        problems.append(f"{where}: {error.get('msg', 'invalid')}")
+    return "Invalid arguments: " + "; ".join(problems)
 
-    The MCP stdio transport owns the process's real stdout. While the server
-    runs, ``sys.stdout`` points at stderr, so a stray ``print()`` from this
-    package or from a library cannot corrupt the protocol stream.
+
+class _BACnetFastMCP(FastMCP):
+    """FastMCP with two guarantees on top.
+
+    - Arguments that fail FastMCP's type validation come back as the usual
+      ``{success: false, ...}`` envelope, like every other error, instead of
+      as an MCP error result.
+    - On stdio, stdout carries nothing but JSON-RPC: the transport owns the
+      process's real stdout and, while the server runs, ``sys.stdout`` points
+      at stderr, so a stray ``print()`` from this package or a library cannot
+      corrupt the protocol stream.
     """
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        try:
+            return await super().call_tool(name, arguments)
+        except ToolError as exc:
+            tool = self._tool_manager.get_tool(name)
+            if tool is None or not isinstance(exc.__cause__, ValidationError):
+                raise
+            result = fail(describe_validation_error(exc.__cause__), {"tool": name})
+            return tool.fn_metadata.convert_result(result)
 
     async def run_stdio_async(self) -> None:
         protocol_out = anyio.wrap_file(TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
@@ -58,7 +83,7 @@ class BACnetMCPServer:
         self.client = client or BACnetClient()
         self.tool_config = tool_config or ToolConfig.from_env()
         self.object_map = ObjectMap(self.tool_config.object_map_path)
-        self._server = _StdioFastMCP(
+        self._server = _BACnetFastMCP(
             name="BACnet MCP Server",
             instructions=(
                 "Tools for BACnet/IP building automation devices. Use discover_devices "
