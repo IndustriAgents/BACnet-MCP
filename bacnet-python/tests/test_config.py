@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import socket
+import sys
 
 import pytest
 from helpers import free_udp_port
@@ -155,3 +157,33 @@ def test_unbindable_address_fails_preflight():
     client = BACnetClient(BACnetConfig(interface="192.0.2.1/24", port=free_udp_port()))
     with pytest.raises(BACnetClientError, match="cannot bind"):
         client.preflight()
+
+
+def test_object_map_path_with_an_unknown_user_is_a_config_error():
+    with pytest.raises(ConfigError, match="OBJECT_MAP_FILE"):
+        ToolConfig.from_env({"OBJECT_MAP_FILE": "~nosuchuser-bacnet-test/objects.json"})
+
+
+@pytest.fixture
+def root_logging():
+    root = logging.getLogger()
+    saved = (root.level, root.handlers[:])
+    yield root
+    root.setLevel(saved[0])
+    root.handlers[:] = saved[1]
+
+
+@pytest.mark.parametrize(
+    ("raw", "level"), [("", "WARNING"), ("debug", "DEBUG"), (" Error ", "ERROR")]
+)
+def test_log_level(clean_env, root_logging, raw, level):
+    clean_env["BACNET_LOG_LEVEL"] = raw
+    cli.configure_logging()
+    assert root_logging.level == getattr(logging, level)
+    assert all(getattr(h, "stream", None) is not sys.stdout for h in root_logging.handlers)
+
+
+def test_unknown_log_level_is_a_config_error(clean_env):
+    clean_env["BACNET_LOG_LEVEL"] = "LOUD"
+    with pytest.raises(ConfigError, match="BACNET_LOG_LEVEL"):
+        cli.configure_logging()

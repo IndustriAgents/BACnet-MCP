@@ -11,8 +11,6 @@ from dotenv import find_dotenv, load_dotenv
 from .bacnet_client import BACnetClientError, ConfigError
 from .server import BACnetMCPServer
 
-log = logging.getLogger("bacnet_mcp")
-
 
 def load_environment() -> None:
     """Load ``.env`` from the working directory (or the nearest parent).
@@ -23,12 +21,17 @@ def load_environment() -> None:
     load_dotenv(find_dotenv(usecwd=True))
 
 
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
 def configure_logging() -> None:
     """Send all logging to stderr; stdout is the MCP JSON-RPC channel."""
-    level_name = os.environ.get("BACNET_LOG_LEVEL", "WARNING").strip().upper() or "WARNING"
-    level = logging.getLevelName(level_name)
-    if not isinstance(level, int):
-        level = logging.WARNING
+    level_name = os.environ.get("BACNET_LOG_LEVEL", "").strip().upper() or "WARNING"
+    if level_name not in LOG_LEVELS:
+        raise ConfigError(
+            f"BACNET_LOG_LEVEL must be one of {', '.join(LOG_LEVELS)}, got {level_name!r}"
+        )
+    level = getattr(logging, level_name)
     logging.basicConfig(
         level=level,
         stream=sys.stderr,
@@ -46,9 +49,11 @@ def _leaves(exc: BaseException) -> list[BaseException]:
 
 def main() -> None:
     load_environment()
-    configure_logging()
     try:
+        configure_logging()
         server = BACnetMCPServer()
+        if server.object_map.error:
+            raise ConfigError(server.object_map.error)
         server.client.preflight()
     except (ConfigError, BACnetClientError) as exc:
         sys.exit(f"bacnet-mcp: {exc}")
@@ -61,8 +66,9 @@ def main() -> None:
         errors = [leaf for leaf in leaves if isinstance(leaf, BACnetClientError)]
         if not errors:
             raise
+        # Straight to stderr: logging may be set to CRITICAL.
         for error in errors:
-            log.error("%s", error)
+            print(f"bacnet-mcp: {error}", file=sys.__stderr__)
         sys.exit(1)
 
 
