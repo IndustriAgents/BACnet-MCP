@@ -12,32 +12,34 @@ encryption of its own — anyone who can reach the network segment can read and
 write objects on any device that accepts it. BACnet Secure Connect (BACnet/SC)
 addresses this, but this server does not implement it.
 
-The server also *joins* that network: on startup it runs a BAC0 stack that
-binds UDP `BACNET_PORT` (default `47808`) on `BACNET_INTERFACE` (default
-`0.0.0.0`, i.e. every interface) and presents itself as a BACnet device
-(instance `BACNET_DEVICE_INSTANCE`, default `1234`).
+The server also *joins* that network: on startup it runs a bacpypes3 BACnet/IP
+stack that binds UDP `BACNET_PORT` (default `47808`) on `BACNET_INTERFACE`
+(default `127.0.0.1`) and presents itself as a BACnet device (instance
+`BACNET_DEVICE_INSTANCE`, default `1234`). It does not announce itself, but
+it answers Who-Is and ReadProperty for its own device object like any other
+device; it refuses WriteProperty to its own objects.
 
 So treat it as equipment on the building automation network, not as an
 application on the office network.
 
 ## Running it safely
 
-- **Start on loopback, then against the mock.** The server does not talk to
-  `bacnet-mock-device` yet (see [Status](README.md#status)), so for now run it
-  with `BACNET_INTERFACE=127.0.0.1`. Once it does, exercise an agent end to end
-  against the mock first, every time, before it gets near a real building.
-- **Turn writes off until you mean otherwise.** `BACNET_WRITES_ENABLED`
-  defaults to `true`; set it to `false` for anything you only want to observe.
+- **Start on loopback, then against the mock.** The defaults keep the server
+  on `127.0.0.1`. Exercise an agent end to end against `bacnet-mock-device`
+  first, every time, before it gets near a real building.
+- **Writes stay off until you mean otherwise.** `BACNET_WRITES_ENABLED`
+  defaults to `false`, and the write tools refuse to act until it is `true`.
   Writes to a BACnet device move physical equipment (setpoints, outputs,
   schedules), there is no undo, and a language model will call a tool it has
-  been given. The current write tools do not send anything to a device yet
-  (see [Status](README.md#status)), but configure them as if they did — the
-  gate is meant to be in place before the bindings are.
-- **Bind to one interface.** Set `BACNET_INTERFACE` to the address on the BAS
-  network rather than leaving it on `0.0.0.0`, and pick a `BACNET_DEVICE_INSTANCE`
-  that does not collide with a real device: the server announces itself with
-  an I-Am broadcast at startup. Set both in the process environment; a `.env`
-  file is read too late for them (see [Configuration](README.md#configuration)).
+  been given. Once writes are on, the model can write any property the device
+  accepts: there is no per-object allow-list yet, so enable writes only for
+  sessions that need them, and prefer a command `priority` that your
+  operators recognise and can override.
+- **Bind to one interface.** To reach real devices, set `BACNET_INTERFACE` to
+  the host's address on the BAS network with its prefix length (for example
+  `192.168.1.10/24`) rather than `0.0.0.0`, and pick a
+  `BACNET_DEVICE_INSTANCE` that does not collide with a real device: the
+  server answers Who-Is with that instance.
 - **Do not expose the server beyond the host running the client.** It is a
   stdio process meant to run beside the MCP client, not a network service.
 - **Segment the network.** The server should sit where a BAS engineering
@@ -74,5 +76,5 @@ In scope: the MCP server (`bacnet-python`) and the mock device
 
 Out of scope: vulnerabilities in the BACnet protocol itself (the lack of
 authentication in BACnet/IP is a property of BACnet/IP), in third-party
-libraries such as BAC0 and bacpypes3 — report those upstream — and in vendor
+libraries such as bacpypes3 and the MCP SDK — report those upstream — and in vendor
 controller firmware.

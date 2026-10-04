@@ -22,9 +22,9 @@
 
 ## Checklist
 
-- [ ] Tools still return the shared `{ success, data, error, meta }` envelope.
+- [ ] Tools still return the shared `{ success, data, error, meta }` envelope, and nothing reports success for data that did not come from a device.
 - [ ] The CI checks pass locally (see [CONTRIBUTING.md](https://github.com/IndustriAgents/BACnet-MCP/blob/main/CONTRIBUTING.md#checks)).
-- [ ] The mock device can exercise the change and I tested against it (or: it is a server-side change, which the mock cannot exercise yet because the server does not talk to it — say below how you tested).
+- [ ] The mock device can exercise the change and I tested against it (if it cannot, say below why and how you tested).
 - [ ] Nothing was tested against production equipment.
 - [ ] Nothing new is written to `stdout` — all logging goes to `stderr`.
 - [ ] I updated the README(s) where relevant.
