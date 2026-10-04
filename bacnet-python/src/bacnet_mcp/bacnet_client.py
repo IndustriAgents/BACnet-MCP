@@ -300,6 +300,9 @@ class BACnetClient:
         if self._app is not None:
             self._shutdown(self._app)
             self._app = None
+            # asyncio closes datagram sockets on the next loop iterations
+            for _ in range(3):
+                await asyncio.sleep(0)
 
     @staticmethod
     def _transport_tasks(app: Application) -> list[asyncio.Task]:
