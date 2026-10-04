@@ -333,3 +333,35 @@ def test_the_servers_own_objects_refuse_writes_from_the_network():
                 peer.close()
 
     run(scenario())
+
+
+@pytest.mark.parametrize("address", ["*", "*:*", "2:*"])
+def test_broadcast_discovery_without_a_broadcast_address_is_an_error(address):
+    """It used to look like an empty network: the Who-Is was never sent."""
+
+    async def scenario():
+        async with running_client() as client:
+            with pytest.raises(BACnetClientError, match="no broadcast address"):
+                await client.discover_devices(300, address)
+
+    run(scenario())
+
+
+def test_booleans_are_only_written_to_boolean_or_enumerated_properties():
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            with pytest.raises(BACnetClientError, match="give a number or string"):
+                await client.write_property(
+                    MOCK_DEVICE_ID,
+                    "analog-output",
+                    1,
+                    "present-value",
+                    True,
+                    8,
+                    address=mock_address(mock),
+                )
+            assert float(mock_object(mock, "analog-output", 1).presentValue) == 50.0
+            await client.write_property(MOCK_DEVICE_ID, "binary-value", 1, "present-value", True, 8)
+            assert str(mock_object(mock, "binary-value", 1).presentValue) == "active"
+
+    run(scenario())

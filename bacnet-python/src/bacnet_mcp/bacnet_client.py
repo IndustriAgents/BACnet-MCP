@@ -36,7 +36,7 @@ from bacpypes3.json.util import atomic_encode, taglist_to_json_list
 from bacpypes3.local.device import DeviceObject
 from bacpypes3.local.networkport import NetworkPortObject
 from bacpypes3.pdu import Address
-from bacpypes3.primitivedata import Atomic, Null, Unsigned
+from bacpypes3.primitivedata import Atomic, Boolean, Enumerated, Null, Unsigned
 
 log = logging.getLogger(__name__)
 
@@ -477,11 +477,11 @@ class BACnetClient:
         """Send Who-Is and collect the I-Am answers for ``timeout_ms``."""
         app = self._require_app()
         start = time.perf_counter()
-        if address is None:
+        destination = None if address is None else self.parse_address(address, allow_broadcast=True)
+        if destination is None or not (destination.is_localstation or destination.is_remotestation):
+            # bacpypes3 would fail to send a broadcast in the background and the
+            # Who-Is would just time out, which looks like "no devices".
             self._require_broadcast()
-            destination = None
-        else:
-            destination = self.parse_address(address, allow_broadcast=True)
         i_ams = await app.who_is(low_limit, high_limit, destination, timeout=timeout_ms / 1000.0)
 
         devices: list[dict[str, Any]] = []
@@ -515,15 +515,14 @@ class BACnetClient:
     async def _add_details(self, device: dict[str, Any]) -> None:
         """Best effort: object-name, vendor-name and model-name of a device."""
         device_id = device["device_id"]
+        addr = self._addresses[device_id]
         for key, prop in (
             ("name", "object-name"),
             ("vendor", "vendor-name"),
             ("model", "model-name"),
         ):
             try:
-                device[key], _ = await self.read_property(
-                    device_id, "device", device_id, prop, address=device["address"]
-                )
+                device[key] = await self._read_at(addr, device_id, "device", device_id, prop, None)
             except BACnetClientError as exc:
                 device[key] = None
                 device.setdefault("detail_errors", {})[prop] = str(exc)
@@ -538,9 +537,29 @@ class BACnetClient:
         address: str | None = None,
     ) -> tuple[Any, dict[str, Any]]:
         """ReadProperty; returns the decoded value as JSON-ready data."""
-        app = self._require_app()
+        self._require_app()
         start = time.perf_counter()
         addr = await self._resolve(device_id, address)
+        value = await self._read_at(
+            addr, device_id, object_type, object_instance, property_id, array_index
+        )
+        meta = {
+            "duration_ms": round((time.perf_counter() - start) * 1000.0, 3),
+            "device_id": device_id,
+            "address": str(addr),
+        }
+        return value, meta
+
+    async def _read_at(
+        self,
+        addr: Address,
+        device_id: int,
+        object_type: str,
+        object_instance: int,
+        property_id: str,
+        array_index: int | None,
+    ) -> Any:
+        app = self._require_app()
         vendor_info, objid, prop, array_index = await self._references(
             app, addr, object_type, object_instance, property_id, array_index
         )
@@ -559,12 +578,7 @@ class BACnetClient:
             value = response.propertyValue.cast_out(property_type)
         except Exception as exc:  # noqa: BLE001 - decoding of device data
             raise BACnetClientError(f"could not decode the value of {prop}: {exc}") from exc
-        meta = {
-            "duration_ms": round((time.perf_counter() - start) * 1000.0, 3),
-            "device_id": device_id,
-            "address": str(addr),
-        }
-        return to_jsonable(value), meta
+        return to_jsonable(value)
 
     async def write_property(
         self,
@@ -595,6 +609,11 @@ class BACnetClient:
                     "a null value relinquishes a priority-array slot and needs a priority"
                 )
             encoded: Any = Null(())
+        elif isinstance(value, bool) and not issubclass(property_type, Boolean | Enumerated):
+            raise BACnetClientError(
+                f"value {value!r} is not valid for {prop} ({property_type.__name__}): "
+                "give a number or string"
+            )
         else:
             try:
                 encoded = value if isinstance(value, property_type) else property_type(value)
