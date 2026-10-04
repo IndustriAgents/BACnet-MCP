@@ -729,10 +729,12 @@ def answer_writes_with_abort(mock, reason: str) -> None:
         ("out-of-resources", "unknown"),
         ("tsm-timeout", "unknown"),
         ("preempted-by-higher-priority-task", "unknown"),
+        # sent by a server transaction after the whole (unsegmented) request
+        # arrived, e.g. from AWAIT_RESPONSE: may follow execution
+        ("invalid-apdu-in-this-state", "unknown"),
         # refused before execution
         ("segmentation-not-supported", "rejected"),
         ("buffer-overflow", "rejected"),
-        ("invalid-apdu-in-this-state", "rejected"),
     ],
 )
 def test_an_abort_is_rejected_only_when_it_precedes_execution(reason, outcome):

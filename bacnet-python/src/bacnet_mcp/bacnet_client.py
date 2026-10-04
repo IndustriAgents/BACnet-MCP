@@ -108,9 +108,11 @@ PRE_EXECUTION_ABORTS = frozenset(
         "window-size-out-of-range",
         "security-error",
         "insufficient-security",
-        "invalid-apdu-in-this-state",
     }
 )
+# invalid-apdu-in-this-state and tsm-timeout precede execution only while a
+# segmented request is still arriving; writes here are never segmented, so a
+# device sending them has already received the whole request: "unknown".
 
 REQUEST_SLACK_S = 2.0  # on top of the APDU timeout, for one request's deadline
 MAX_REAL = 3.4028234663852886e38  # largest finite IEEE 754 single
