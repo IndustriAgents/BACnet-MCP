@@ -147,8 +147,11 @@ These are shared with every server in the IndustriConnect suite:
   sent later.
 - **A gone client sends nothing.** When stdin closes, pending device calls
   are cancelled; the last check before a write is sent (closing flag, task
-  cancellation, no `await` in between) makes an unsent write `not_sent`.
-  Calls already received still answer (briefly) before the session closes.
+  cancellation, the MCP request's own `cancel_called` flag, no `await` in
+  between) makes an unsent write `not_sent`. A write refused because the
+  request was cancelled ends as a cancellation, never with a second reply
+  (the SDK has already answered it). Calls already received still answer
+  (briefly) before the session closes.
 - **Never report what did not happen.** A tool returns `success: true` only
   for data that came from a device, or a write the device acknowledged.
   Nothing returns placeholder or made-up values; what is not implemented
