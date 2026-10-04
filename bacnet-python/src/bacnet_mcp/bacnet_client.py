@@ -31,6 +31,7 @@ from bacpypes3.apdu import (
 from bacpypes3.app import Application
 from bacpypes3.constructeddata import Any as AnyValue
 from bacpypes3.constructeddata import AnyAtomic, Array, Choice, Sequence
+from bacpypes3.errors import PropertyError
 from bacpypes3.json.util import atomic_encode, taglist_to_json_list
 from bacpypes3.local.device import DeviceObject
 from bacpypes3.local.networkport import NetworkPortObject
@@ -177,6 +178,26 @@ class BACnetConfig:
         return f"{iface.ip}/{prefix}:{self.port}"
 
 
+class _ReadOnly:
+    """Refuse WriteProperty from the network to the server's own objects.
+
+    bacpypes3's local objects accept a write to any property, so without this
+    anyone on the BACnet network could rename the server's device object or
+    change its APDU timeout and retries.
+    """
+
+    async def write_property(self, attr, value, index=None, priority=None):
+        raise PropertyError("writeAccessDenied")
+
+
+class ServerDeviceObject(_ReadOnly, DeviceObject):
+    pass
+
+
+class ServerNetworkPortObject(_ReadOnly, NetworkPortObject):
+    pass
+
+
 def _check_bindable(ip: str, port: int, what: str) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         try:
@@ -266,7 +287,7 @@ class BACnetClient:
         if self._app is not None:
             return
         self.preflight()
-        device = DeviceObject(
+        device = ServerDeviceObject(
             objectIdentifier=("device", self.config.device_instance),
             objectName=f"bacnet-mcp-{self.config.device_instance}",
             vendorIdentifier=VENDOR_IDENTIFIER,
@@ -275,7 +296,7 @@ class BACnetClient:
             apduTimeout=self.config.apdu_timeout_ms,
             numberOfApduRetries=self.config.apdu_retries,
         )
-        network_port = NetworkPortObject(
+        network_port = ServerNetworkPortObject(
             self.config.bacnet_address,
             objectIdentifier=("network-port", 1),
             objectName="NetworkPort-1",

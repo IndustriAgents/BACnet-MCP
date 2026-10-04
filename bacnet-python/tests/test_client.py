@@ -11,6 +11,10 @@ import socket
 import time
 
 import pytest
+from bacpypes3.apdu import ErrorRejectAbortNack
+from bacpypes3.app import Application
+from bacpypes3.local.device import DeviceObject
+from bacpypes3.local.networkport import NetworkPortObject
 from bacpypes3.primitivedata import Real
 from helpers import (
     MOCK_DEVICE_ID,
@@ -288,3 +292,44 @@ def test_broadcast_addresses_only_for_discovery():
     with pytest.raises(BACnetClientError, match="broadcast"):
         BACnetClient.parse_address("*:*")
     assert BACnetClient.parse_address("*:*", allow_broadcast=True) is not None
+
+
+def test_the_servers_own_objects_refuse_writes_from_the_network():
+    """Another BACnet device can read the server's device object, not change it."""
+
+    async def scenario():
+        async with running_client(device_instance=4321) as client:
+            peer = Application.from_object_list(
+                [
+                    DeviceObject(
+                        objectIdentifier=("device", 4000),
+                        objectName="peer",
+                        vendorIdentifier=999,
+                        apduTimeout=500,
+                        numberOfApduRetries=0,
+                    ),
+                    NetworkPortObject(
+                        f"127.0.0.1:{free_udp_port()}",
+                        objectIdentifier=("network-port", 1),
+                        objectName="NetworkPort-1",
+                    ),
+                ]
+            )
+            server = f"127.0.0.1:{client.config.port}"
+            try:
+                name = await peer.read_property(server, "device,4321", "object-name")
+                assert str(name) == "bacnet-mcp-4321"
+                for objid, prop, value in [
+                    ("device,4321", "object-name", "renamed"),
+                    ("device,4321", "apdu-timeout", 1),
+                    ("network-port,1", "object-name", "renamed"),
+                ]:
+                    with pytest.raises(ErrorRejectAbortNack) as caught:
+                        await peer.write_property(server, objid, prop, value)
+                    assert str(caught.value.reason) == "write-access-denied"
+                timeout = await peer.read_property(server, "device,4321", "apdu-timeout")
+                assert int(timeout) == client.config.apdu_timeout_ms
+            finally:
+                peer.close()
+
+    run(scenario())
