@@ -692,3 +692,27 @@ def test_object_map_aliases_reject_booleans(tmp_path):
     envelope = with_session(server, scenario)
     assert envelope["success"] is False and "device_id must be an integer" in envelope["error"]
     assert client.calls == []
+
+
+def test_tool_calls_see_the_mcp_requests_cancel_scope():
+    """The write path's cancel_called check relies on private mcp<2 internals
+    (session._in_flight[request_id]._cancel_scope). Fail loudly if they move."""
+    from bacnet_mcp.bacnet_client import request_cancel_scope
+
+    server = make_server()
+    seen = {}
+
+    @server.mcp.tool()
+    async def probe() -> dict:
+        """Report the request cancel scope the server captured."""
+        scope = request_cancel_scope.get()
+        seen["scope"] = scope
+        return {"success": True, "data": None, "error": None, "meta": {}}
+
+    async def scenario(session):
+        return await session.call_tool("probe", {})
+
+    with_session(server, scenario)
+    assert isinstance(seen["scope"], anyio.CancelScope)
+    assert seen["scope"].cancel_called is False
+    assert request_cancel_scope.get() is None  # reset after the call

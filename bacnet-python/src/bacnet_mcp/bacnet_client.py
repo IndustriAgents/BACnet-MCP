@@ -8,6 +8,7 @@ talks to other devices through bacpypes3's asyncio application layer.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import ipaddress
 import logging
 import math
@@ -78,6 +79,14 @@ WILDCARD_DEVICE = ("device", 4194303)
 
 _TRUE = {"1", "true", "yes", "y", "on"}
 _FALSE = {"0", "false", "no", "n", "off"}
+
+
+#: The MCP request's cancel scope for the tool call being run. The server sets
+#: it when a tool call starts; the write path refuses to send once it is
+#: cancelled, even in the loop step where nothing would interrupt the task.
+request_cancel_scope: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "bacnet_mcp_request_cancel_scope", default=None
+)
 
 
 class ConfigError(ValueError):
@@ -1141,6 +1150,12 @@ class BACnetClient:
             )
         task = asyncio.current_task()
         if task is not None and task.cancelling():
+            raise WriteError("the call was cancelled before the write was sent", NOT_SENT, False)
+        # The MCP SDK cancels a request by setting its cancel scope; a task
+        # whose last await had already completed runs one more step anyway, so
+        # the scope's flag is checked too (a plain bool).
+        scope = request_cancel_scope.get()
+        if scope is not None and getattr(scope, "cancel_called", False):
             raise WriteError("the call was cancelled before the write was sent", NOT_SENT, False)
         if loop.time() > send_by:
             raise WriteError(

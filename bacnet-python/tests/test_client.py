@@ -13,6 +13,7 @@ import socket
 import time
 from functools import partial
 
+import anyio
 import pytest
 from bacpypes3.apdu import (
     AbortPDU,
@@ -1263,3 +1264,92 @@ def test_a_cancellation_swallowed_during_preparation_still_stops_the_write(monke
     outcome, writes = run(scenario())
     assert writes == []
     assert outcome in (("not_sent", False), "cancelled")
+
+
+def test_a_cancel_in_the_same_loop_step_as_the_preparation_never_sends(monkeypatch):
+    """CANCEL RACE: the MCP SDK cancels a request by cancelling its scope.
+
+    Here the request's scope is cancelled synchronously in the very step in
+    which the write's preparation completes, so no await is left to deliver
+    the cancellation before app.request(). Repeated to catch an ordering that
+    only sometimes lets a write through.
+    """
+    from bacnet_mcp import bacnet_client
+
+    build = bacnet_client.BACnetClient._write_request
+    holder: dict[str, anyio.CancelScope] = {}
+
+    async def build_then_cancel(self, *args):
+        request = await build(self, *args)
+        holder["scope"].cancel()  # same step, nothing awaited afterwards
+        return request
+
+    monkeypatch.setattr(bacnet_client.BACnetClient, "_write_request", build_then_cancel)
+
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            writes = count_requests(mock, "do_WritePropertyRequest")
+            addr = mock_address(mock)
+            outcomes = []
+            for _ in range(40):
+                with anyio.CancelScope() as request_scope:
+                    holder["scope"] = request_scope
+                    token = bacnet_client.request_cancel_scope.set(request_scope)
+                    try:
+                        await client.write_property(
+                            MOCK_DEVICE_ID,
+                            "analog-output",
+                            1,
+                            "present-value",
+                            6.0,
+                            8,
+                            address=addr,
+                        )
+                        outcomes.append("written")
+                    except WriteError as exc:
+                        outcomes.append(exc.outcome)
+                    finally:
+                        bacnet_client.request_cancel_scope.reset(token)
+            await asyncio.sleep(0.3)
+            return outcomes, writes
+
+    outcomes, writes = run(scenario())
+    assert writes == []
+    assert "written" not in outcomes
+
+
+def test_a_request_marked_cancelled_is_refused_even_before_anyio_delivers_it():
+    """The cancel_called flag alone stops the send.
+
+    The SDK flags the request (scope.cancel_called) before anything reaches
+    the task; with a lock or worker in between, the task may not see a
+    CancelledError before it would send. A scope that is flagged but never
+    delivers stands in for that moment.
+    """
+    from bacnet_mcp import bacnet_client
+
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            writes = count_requests(mock, "do_WritePropertyRequest")
+            flagged = anyio.CancelScope()  # never entered: cancel() only sets the flag
+            flagged.cancel()
+            token = bacnet_client.request_cancel_scope.set(flagged)
+            try:
+                with pytest.raises(WriteError) as caught:
+                    await client.write_property(
+                        MOCK_DEVICE_ID,
+                        "analog-output",
+                        1,
+                        "present-value",
+                        6.0,
+                        8,
+                        address=mock_address(mock),
+                    )
+            finally:
+                bacnet_client.request_cancel_scope.reset(token)
+            await asyncio.sleep(0.3)
+            return caught.value, writes
+
+    error, writes = run(scenario())
+    assert (error.outcome, error.request_sent) == ("not_sent", False)
+    assert writes == []

@@ -17,7 +17,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.stdio import stdio_server
 from pydantic import ValidationError
 
-from .bacnet_client import NOT_SENT, BACnetClient
+from .bacnet_client import NOT_SENT, BACnetClient, request_cancel_scope
 from .tools import ObjectMap, ToolConfig, ToolResources, fail, register_tools, write_outcome
 
 
@@ -72,10 +72,28 @@ class _BACnetFastMCP(FastMCP):
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         self.calls_in_flight += 1
+        token = request_cancel_scope.set(self.current_request_cancel_scope())
         try:
             return await self._call_tool(name, arguments)
         finally:
+            request_cancel_scope.reset(token)
             self.calls_in_flight -= 1
+
+    def current_request_cancel_scope(self) -> Any:
+        """The cancel scope the MCP SDK uses for the request being handled.
+
+        Private mcp<2 API (session._in_flight[request_id]._cancel_scope), read
+        defensively; a test fails if it moves.
+        """
+        try:
+            context = self._mcp_server.request_context
+        except LookupError:
+            return None
+        in_flight = getattr(getattr(context, "session", None), "_in_flight", None)
+        if not isinstance(in_flight, dict):
+            return None
+        responder = in_flight.get(getattr(context, "request_id", None))
+        return getattr(responder, "_cancel_scope", None)
 
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         tool = self._tool_manager.get_tool(name)
