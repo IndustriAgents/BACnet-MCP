@@ -1082,3 +1082,79 @@ def test_the_default_write_deadline_stays_under_50_s():
     assert BACnetClient(BACnetConfig(apdu_retries=10)).write_deadline == 45.0
     # One request that needs longer than the cap still gets its full window.
     assert BACnetClient(BACnetConfig(apdu_timeout_ms=60000)).write_deadline == 62.0
+
+
+def test_one_deadline_covers_every_identity_attempt_and_the_write(monkeypatch):
+    """The call's deadline is never restarted per request.
+
+    The device never answers the identity check: each attempt times out after
+    0.5 s and is retried (3 retries = 2 s), but the write call has 1 s to
+    prepare in total, so it stops after about two attempts and sends nothing.
+    """
+    from bacnet_mcp import bacnet_client
+
+    # apdu 500 ms -> request deadline 2.5 s; cap 3.5 s -> 1 s to prepare.
+    monkeypatch.setattr(bacnet_client, "WRITE_DEADLINE_CAP_S", 3.5)
+
+    async def scenario():
+        async with (
+            running_mock() as mock,
+            running_client(apdu_timeout_ms=500, apdu_retries=3) as client,
+        ):
+            writes = count_requests(mock, "do_WritePropertyRequest")
+            identity_reads = []
+
+            async def never_answer(apdu):
+                identity_reads.append(time.perf_counter())
+                await asyncio.sleep(30)
+
+            mock.app.do_ReadPropertyRequest = never_answer
+            start = time.perf_counter()
+            with pytest.raises(WriteError) as caught:
+                await client.write_property(
+                    MOCK_DEVICE_ID,
+                    "analog-output",
+                    1,
+                    "present-value",
+                    3.0,
+                    8,
+                    address=mock_address(mock),
+                )
+            elapsed = time.perf_counter() - start
+            await asyncio.sleep(1.5)  # the per-request retries would still be going
+            return caught.value, elapsed, [t - start for t in identity_reads], writes
+
+    error, elapsed, attempts, writes = run(scenario())
+    assert (error.outcome, error.request_sent) == ("not_sent", False)
+    assert "deadline" in str(error)
+    assert elapsed < 1.4
+    assert len(attempts) <= 2 and all(t < 1.1 for t in attempts)
+    assert writes == []
+
+
+def test_a_read_call_has_one_deadline_too(monkeypatch):
+    """Retries share the call's deadline instead of each getting a fresh one."""
+    from bacnet_mcp import bacnet_client
+
+    # read_deadline = one request window (2.5 s); 11 attempts would take 5.5 s.
+    monkeypatch.setattr(bacnet_client, "WRITE_DEADLINE_CAP_S", 1.0)
+
+    async def scenario():
+        async with (
+            running_mock() as mock,
+            running_client(apdu_timeout_ms=500, apdu_retries=10) as client,
+        ):
+            assert client.read_deadline == 2.5
+
+            async def never_answer(apdu):
+                await asyncio.sleep(30)
+
+            mock.app.do_ReadPropertyRequest = never_answer
+            start = time.perf_counter()
+            with pytest.raises(BACnetClientError, match="deadline"):
+                await client.read_property(
+                    MOCK_DEVICE_ID, "analog-input", 1, address=mock_address(mock)
+                )
+            return time.perf_counter() - start
+
+    assert run(scenario()) < 3.2

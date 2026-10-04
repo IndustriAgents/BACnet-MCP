@@ -141,7 +141,10 @@ These are shared with every server in the IndustriConnect suite:
   `unknown` or `not_sent` (including anything that fails before sending).
   Write tools are `destructiveHint: true, idempotentHint: false`.
 - **Every request has a deadline.** No call may hang: a read gives up with an
-  error, a write with outcome `unknown`.
+  error, a write with outcome `unknown`. A tool call has one absolute
+  deadline, set when it starts and shared by every request it makes; a
+  write not sent while a full reply window is left is `not_sent`, never
+  sent later.
 - **A gone client sends nothing.** When stdin closes, pending calls are
   cancelled; the last check before a write is sent (closing flag, task
   cancellation, no `await` in between) makes an unsent write `not_sent`.

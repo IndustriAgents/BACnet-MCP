@@ -43,10 +43,13 @@ Early, but real: the tools speak BACnet/IP. What works today:
   reply, a datagram the OS refused to send, a bad or unknown argument —
   comes back as `success: false` with a readable `error`. Every request has
   a deadline (`BACNET_APDU_TIMEOUT_MS` + 2 s per attempt), so no call hangs.
-  A write call also has one overall deadline from the moment it starts
-  ((`BACNET_APDU_RETRIES` + 2) × that window, at most 45 s; 25 s by
-  default): if finding and checking the device leaves no full reply window,
-  the write is `not_sent` and is never sent later.
+  Each tool call also has ONE overall deadline from the moment it starts,
+  shared by every request it makes (identity-check attempts, Who-Is
+  fallback, retries, the WriteProperty) and never restarted: for a write
+  (`BACNET_APDU_RETRIES` + 2) × that window, for a read twice
+  (`BACNET_APDU_RETRIES` + 1) × the window, each at most 45 s (25 s and 40 s
+  by default). If finding and checking the device leaves no full reply
+  window, the write is `not_sent` and is never sent later.
   Bad settings stop the server at startup.
 - CI runs the server against the mock over BACnet/IP on the runner's loopback
   interface, through a real MCP stdio session.

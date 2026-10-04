@@ -556,15 +556,29 @@ class BACnetClient:
             scope.cancel()
 
     async def _cancellable(
-        self, operation: Callable[[], Awaitable[Any]], cancelled: Callable[[], BaseException]
+        self,
+        operation: Callable[[], Awaitable[Any]],
+        cancelled: Callable[[], BaseException],
+        deadline_s: float | None = None,
     ) -> Any:
-        """Run ``operation`` so that client_disconnected() can cancel it."""
+        """Run ``operation`` so that client_disconnected() can cancel it.
+
+        With ``deadline_s``, the whole operation -- every request it makes --
+        shares one deadline counted from now; running out is a clean error.
+        """
         if self._closing:
             raise cancelled()
         with anyio.CancelScope() as scope:
             self._scopes.add(scope)
             try:
-                return await operation()
+                if deadline_s is None:
+                    return await operation()
+                with anyio.fail_after(deadline_s):
+                    return await operation()
+            except TimeoutError:
+                raise BACnetClientError(
+                    f"no result within the call's {deadline_s:g} s deadline"
+                ) from None
             finally:
                 self._scopes.discard(scope)
         raise cancelled()  # only reached when client_disconnected() cancelled it
@@ -731,6 +745,12 @@ class BACnetClient:
         return self.config.apdu_timeout_ms / 1000.0 + REQUEST_SLACK_S
 
     @property
+    def read_deadline(self) -> float:
+        """Seconds a whole read call may take: identity check and read, retries included."""
+        rounds = 2 * (self.config.apdu_retries + 1)
+        return max(self.request_deadline, min(WRITE_DEADLINE_CAP_S, rounds * self.request_deadline))
+
+    @property
     def write_deadline(self) -> float:
         """Seconds a whole write call may take, from the moment it starts.
 
@@ -832,6 +852,7 @@ class BACnetClient:
                 timeout_ms, address, low_limit, high_limit, include_details
             ),
             _disconnected,
+            timeout_ms / 1000.0 + DETAIL_BUDGET_S + REQUEST_SLACK_S,
         )
 
     async def _discover_devices(
@@ -925,6 +946,7 @@ class BACnetClient:
                 device_id, object_type, object_instance, property_id, array_index, address
             ),
             _disconnected,
+            self.read_deadline,
         )
 
     async def _read_property(
@@ -1006,6 +1028,9 @@ class BACnetClient:
                 NOT_SENT,
                 False,
             )
+        # ONE absolute deadline for the whole call, shared by every request it
+        # makes (identity check attempts, Who-Is fallback, the WriteProperty).
+        not_after = asyncio.get_running_loop().time() + self.write_deadline
         state = {"sent": False}
 
         def cancelled() -> WriteError:
@@ -1023,6 +1048,7 @@ class BACnetClient:
         return await self._cancellable(
             lambda: self._write_property(
                 state,
+                not_after,
                 device_id,
                 object_type,
                 object_instance,
@@ -1038,6 +1064,7 @@ class BACnetClient:
     async def _write_property(
         self,
         state: dict[str, bool],
+        not_after: float,
         device_id: int,
         object_type: str,
         object_instance: int,
@@ -1051,7 +1078,7 @@ class BACnetClient:
         # done while a full reply window is still left; otherwise the write is
         # not sent at all (and never later).
         loop = asyncio.get_running_loop()
-        send_by = loop.time() + self.write_deadline - self.request_deadline
+        send_by = not_after - self.request_deadline
         try:
             app = self._require_app()
             start = time.perf_counter()
@@ -1111,10 +1138,13 @@ class BACnetClient:
         state["sent"] = True
         mark = time.monotonic()
         try:
-            response = await asyncio.wait_for(app.request(request), self.request_deadline)
+            response = await asyncio.wait_for(
+                app.request(request), max(0.0, not_after - loop.time())
+            )
         except TimeoutError:
             raise WriteError(
-                f"no usable reply within {self.request_deadline:g} s: {MAY_HAVE_BEEN_APPLIED}",
+                f"no usable reply within the call's {self.write_deadline:g} s deadline: "
+                f"{MAY_HAVE_BEEN_APPLIED}",
                 UNKNOWN,
                 True,
             ) from None
