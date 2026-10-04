@@ -866,3 +866,100 @@ def test_a_failure_while_building_the_request_is_not_sent(monkeypatch):
     assert (error.outcome, error.request_sent) == ("not_sent", False)
     assert "could not build the request" in str(error)
     assert writes == []
+
+
+def test_a_disconnect_just_before_sending_stops_the_write(monkeypatch):
+    """The last check before app.request(): a disconnect with no await left."""
+    from bacnet_mcp import bacnet_client
+
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            writes = count_requests(mock, "do_WritePropertyRequest")
+            build = bacnet_client.BACnetClient._write_request
+
+            async def build_then_disconnect(self, *args):
+                request = await build(self, *args)
+                self._closing = True  # the client leaves; no cancellation is delivered
+                return request
+
+            monkeypatch.setattr(bacnet_client.BACnetClient, "_write_request", build_then_disconnect)
+            with pytest.raises(WriteError) as caught:
+                await client.write_property(
+                    MOCK_DEVICE_ID,
+                    "analog-output",
+                    1,
+                    "present-value",
+                    5.0,
+                    8,
+                    address=mock_address(mock),
+                )
+            await asyncio.sleep(0.2)
+            return caught.value, writes
+
+    error, writes = run(scenario())
+    assert (error.outcome, error.request_sent) == ("not_sent", False)
+    assert "disconnected before the write was sent" in str(error)
+    assert writes == []
+
+
+def test_a_disconnect_cancels_a_pending_write_and_blocks_new_calls():
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            writes = count_requests(mock, "do_WritePropertyRequest")
+            original = mock.app.do_ReadPropertyRequest
+
+            async def slow_identity(apdu):
+                await asyncio.sleep(1.0)
+                await original(apdu)
+
+            mock.app.do_ReadPropertyRequest = slow_identity
+            pending = asyncio.ensure_future(
+                client.write_property(
+                    MOCK_DEVICE_ID,
+                    "analog-output",
+                    1,
+                    "present-value",
+                    5.0,
+                    8,
+                    address=mock_address(mock),
+                )
+            )
+            await asyncio.sleep(0.3)
+            client.client_disconnected()
+            with pytest.raises(WriteError) as first:
+                await pending
+            with pytest.raises(WriteError) as later:
+                await client.write_property(
+                    MOCK_DEVICE_ID, "analog-output", 1, "present-value", 6.0, 8
+                )
+            with pytest.raises(BACnetClientError, match="disconnected"):
+                await client.read_property(MOCK_DEVICE_ID, "analog-input", 1)
+            await asyncio.sleep(1.2)  # past the identity answer
+            return first.value, later.value, writes
+
+    first, later, writes = run(scenario())
+    assert (first.outcome, first.request_sent) == ("not_sent", False)
+    assert (later.outcome, later.request_sent) == ("not_sent", False)
+    assert writes == []
+
+
+def test_a_disconnect_while_waiting_for_the_ack_is_unknown():
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            addr = mock_address(mock)
+            await client.read_property(MOCK_DEVICE_ID, "analog-input", 1, address=addr)
+            writes = lose_write_acks(mock)
+            pending = asyncio.ensure_future(
+                client.write_property(MOCK_DEVICE_ID, "analog-output", 1, "present-value", 7.0, 8)
+            )
+            while not writes:
+                await asyncio.sleep(0.01)
+            client.client_disconnected()
+            with pytest.raises(WriteError) as caught:
+                await pending
+            return caught.value, writes
+
+    error, writes = run(scenario())
+    assert (error.outcome, error.request_sent) == ("unknown", True)
+    assert "may have been applied" in str(error)
+    assert len(writes) == 1

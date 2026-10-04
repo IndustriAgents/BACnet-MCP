@@ -15,10 +15,12 @@ import os
 import re
 import socket
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import anyio
+import anyio.lowlevel
 from bacpypes3.apdu import (
     AbortPDU,
     ErrorPDU,
@@ -116,6 +118,10 @@ PRE_EXECUTION_ABORTS = frozenset(
 
 REQUEST_SLACK_S = 2.0  # on top of the APDU timeout, for one request's deadline
 MAX_REAL = 3.4028234663852886e38  # largest finite IEEE 754 single
+
+
+def _disconnected() -> BACnetClientError:
+    return BACnetClientError("the MCP client disconnected; the request was stopped")
 
 
 def write_failure_outcome(exc: BaseException) -> str:
@@ -415,6 +421,10 @@ class BACnetClient:
         self._app: Application | None = None
         self._addresses: dict[int, Address] = {}
         self._send_errors: list[tuple[float, OSError]] = []
+        # Set when the MCP client disconnects: pending calls are cancelled and
+        # nothing new is sent (see client_disconnected).
+        self._closing = False
+        self._scopes: set[anyio.CancelScope] = set()
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -438,6 +448,7 @@ class BACnetClient:
     async def open(self) -> None:
         if self._app is not None:
             return
+        self._closing = False
         self.preflight()
         device = ServerDeviceObject(
             objectIdentifier=("device", self.config.device_instance),
@@ -531,6 +542,30 @@ class BACnetClient:
         for task in self._transport_tasks(app):
             task.cancel()
         app.close()
+
+    def client_disconnected(self) -> None:
+        """The MCP client is gone: cancel every pending call, send nothing new.
+
+        A write that has not been sent yet ends ``not_sent`` and is never sent;
+        one already sent ends ``unknown``.
+        """
+        self._closing = True
+        for scope in list(self._scopes):
+            scope.cancel()
+
+    async def _cancellable(
+        self, operation: Callable[[], Awaitable[Any]], cancelled: Callable[[], BaseException]
+    ) -> Any:
+        """Run ``operation`` so that client_disconnected() can cancel it."""
+        if self._closing:
+            raise cancelled()
+        with anyio.CancelScope() as scope:
+            self._scopes.add(scope)
+            try:
+                return await operation()
+            finally:
+                self._scopes.discard(scope)
+        raise cancelled()  # only reached when client_disconnected() cancelled it
 
     def _require_app(self) -> Application:
         if self._app is None:
@@ -773,6 +808,21 @@ class BACnetClient:
         include_details: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Send Who-Is and collect the I-Am answers for ``timeout_ms``."""
+        return await self._cancellable(
+            lambda: self._discover_devices(
+                timeout_ms, address, low_limit, high_limit, include_details
+            ),
+            _disconnected,
+        )
+
+    async def _discover_devices(
+        self,
+        timeout_ms: int,
+        address: str | None,
+        low_limit: int | None,
+        high_limit: int | None,
+        include_details: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         app = self._require_app()
         start = time.perf_counter()
         destination = None if address is None else self._target(address, allow_broadcast=True)
@@ -838,6 +888,22 @@ class BACnetClient:
         address: str | None = None,
     ) -> tuple[Any, dict[str, Any]]:
         """ReadProperty; returns the decoded value as JSON-ready data."""
+        return await self._cancellable(
+            lambda: self._read_property(
+                device_id, object_type, object_instance, property_id, array_index, address
+            ),
+            _disconnected,
+        )
+
+    async def _read_property(
+        self,
+        device_id: int,
+        object_type: str,
+        object_instance: int,
+        property_id: str,
+        array_index: int | None,
+        address: str | None,
+    ) -> tuple[Any, dict[str, Any]]:
         self._require_app()
         start = time.perf_counter()
         addr, _ = await self._resolve(device_id, address)
@@ -908,6 +974,47 @@ class BACnetClient:
                 NOT_SENT,
                 False,
             )
+        state = {"sent": False}
+
+        def cancelled() -> WriteError:
+            if state["sent"]:
+                return WriteError(
+                    f"the MCP client disconnected while waiting for the reply: "
+                    f"{MAY_HAVE_BEEN_APPLIED}",
+                    UNKNOWN,
+                    True,
+                )
+            return WriteError(
+                "the MCP client disconnected before the write was sent", NOT_SENT, False
+            )
+
+        return await self._cancellable(
+            lambda: self._write_property(
+                state,
+                device_id,
+                object_type,
+                object_instance,
+                property_id,
+                value,
+                priority,
+                array_index,
+                address,
+            ),
+            cancelled,
+        )
+
+    async def _write_property(
+        self,
+        state: dict[str, bool],
+        device_id: int,
+        object_type: str,
+        object_instance: int,
+        property_id: str,
+        value: Any,
+        priority: int | None,
+        array_index: int | None,
+        address: str | None,
+    ) -> dict[str, Any]:
         try:
             app = self._require_app()
             start = time.perf_counter()
@@ -928,8 +1035,21 @@ class BACnetClient:
             )
             raise WriteError(message, NOT_SENT, False) from None
 
+        # Last chance not to send: deliver a pending cancellation (the client
+        # cancelled the call, or disconnected), then check, with no await
+        # between the check and app.request().
+        await anyio.lowlevel.checkpoint()
+        if self._closing:
+            raise WriteError(
+                "the MCP client disconnected before the write was sent", NOT_SENT, False
+            )
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise WriteError("the call was cancelled before the write was sent", NOT_SENT, False)
+
         # From here on the request may have reached the device: it is sent
         # exactly once (bacpypes3 has numberOfApduRetries=0) and never retried.
+        state["sent"] = True
         mark = time.monotonic()
         try:
             response = await asyncio.wait_for(app.request(request), self.request_deadline)

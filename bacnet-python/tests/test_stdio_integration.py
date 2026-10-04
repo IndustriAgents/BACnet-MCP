@@ -19,6 +19,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -477,3 +478,128 @@ def test_an_explicit_env_file_can_enable_writes(tmp_path):
     del env["BACNET_WRITES_ENABLED"]
     enabled, _ = ping_writes_enabled(tmp_path, env, ["--env-file", str(tmp_path / "bacnet.env")])
     assert enabled is True
+
+
+SLOW_MOCK = Path(__file__).resolve().parent / "slow_identity_mock.py"
+IDENTITY_DELAY = 2.0
+
+
+@contextmanager
+def slow_identity_mock() -> Iterator[tuple[str, LineReader]]:
+    """A mock that answers identity checks IDENTITY_DELAY s late; yields its writes."""
+    port = free_udp_port()
+    proc = subprocess.Popen(
+        [sys.executable, str(SLOW_MOCK), str(port), str(IDENTITY_DELAY)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        env=isolated_env(),
+    )
+    try:
+        assert proc.stdout is not None
+        output = LineReader(proc.stdout)
+        assert output.next() == "listening\n"
+        yield f"127.0.0.1:{port}", output
+    finally:
+        stop(proc)
+
+
+def writes_seen(output: LineReader, wait: float) -> list[str]:
+    """WRITE lines the mock printed within ``wait`` seconds of quiet."""
+    lines = []
+    while True:
+        try:
+            line = output._lines.get(timeout=wait)
+        except queue.Empty:
+            return lines
+        if line is None:
+            return lines
+        if line.startswith("WRITE"):
+            lines.append(line)
+
+
+def start_slow_write(address: str) -> tuple[subprocess.Popen, LineReader, LineReader]:
+    """Start the server and send a write that waits for the slow identity check."""
+    env = isolated_env(
+        **{
+            **server_env(writes=True),
+            "BACNET_APDU_TIMEOUT_MS": "10000",
+            "BACNET_APDU_RETRIES": "0",
+            "PYTHONUNBUFFERED": "1",
+        }
+    )
+    proc = subprocess.Popen(
+        SERVER_COMMAND,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        text=True,
+    )
+    assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+    stdout, stderr = LineReader(proc.stdout), LineReader(proc.stderr)
+    for request in INITIALIZE:
+        proc.stdin.write(json.dumps(request) + "\n")
+    proc.stdin.flush()
+    assert json.loads(stdout.next())["id"] == 1
+    write = {**target("analog-output", 1, property_id="present-value", address=address)}
+    proc.stdin.write(
+        json.dumps(tool_call(2, "write_property", {**write, "value": 11, "priority": 8}))
+    )
+    proc.stdin.write("\n")
+    proc.stdin.flush()
+    return proc, stdout, stderr
+
+
+def test_a_client_disconnect_stops_a_write_that_has_not_been_sent():
+    """stdin closes while the write waits for its identity check: nothing is sent."""
+    with slow_identity_mock() as (address, mock_output):
+        proc, stdout, stderr = start_slow_write(address)
+        try:
+            time.sleep(0.7)  # the identity check is now pending at the mock
+            proc.stdin.close()  # the MCP client goes away
+            returncode = proc.wait(timeout=TIMEOUT)
+            stdout.rest()
+            errors = "".join(stderr.rest())
+        finally:
+            stop(proc)
+        # Wait past the moment the identity check is answered.
+        writes = writes_seen(mock_output, IDENTITY_DELAY + 1.5)
+    assert writes == []
+    assert returncode == 0, errors
+    assert "Traceback" not in errors
+
+
+def test_a_cancelled_write_is_never_sent():
+    """notifications/cancelled while the write waits for its identity check."""
+    with slow_identity_mock() as (address, mock_output):
+        proc, stdout, stderr = start_slow_write(address)
+        try:
+            time.sleep(0.7)
+            cancel = {
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": {"requestId": 2, "reason": "user cancelled"},
+            }
+            proc.stdin.write(json.dumps(cancel) + "\n")
+            proc.stdin.flush()
+            writes = writes_seen(mock_output, IDENTITY_DELAY + 1.5)
+            proc.stdin.write(json.dumps(tool_call(3, "ping", {})) + "\n")
+            proc.stdin.flush()
+            replies: dict[int, dict[str, Any]] = {}
+            while 3 not in replies:
+                line = stdout.next()
+                assert line is not None
+                message = json.loads(line)
+                replies[message["id"]] = message
+            proc.stdin.close()
+            returncode = proc.wait(timeout=TIMEOUT)
+            errors = "".join(stderr.rest())
+        finally:
+            stop(proc)
+    assert writes == []
+    if 2 in replies:  # the SDK answers a cancelled request with an error
+        assert "result" not in replies[2]
+    assert replies[3]["result"]["structuredContent"]["success"] is True
+    assert returncode == 0, errors

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from importlib.metadata import version as package_version
@@ -23,6 +24,17 @@ from .tools import ObjectMap, ToolConfig, ToolResources, fail, register_tools, w
 @dataclass(slots=True)
 class AppContext:
     client: BACnetClient
+
+
+log = logging.getLogger(__name__)
+
+#: Errors from writing a reply to a client that has disconnected.
+_UNDELIVERABLE = (
+    anyio.ClosedResourceError,
+    anyio.BrokenResourceError,
+    BrokenPipeError,
+    ConnectionResetError,
+)
 
 
 def _refusal_meta(tool: Any) -> dict[str, Any]:
@@ -76,18 +88,53 @@ class _BACnetFastMCP(FastMCP):
             result = fail(describe_validation_error(exc.__cause__), _refusal_meta(tool))
             return tool.fn_metadata.convert_result(result)
 
+    #: Called once when the client's stdin reaches end of file.
+    on_client_disconnect: Callable[[], None] | None = None
+    #: True once the client's stdin has reached end of file.
+    client_gone: bool = False
+
     async def run_stdio_async(self) -> None:
+        """Serve MCP on stdio; stop pending device requests when the client leaves.
+
+        FastMCP stops reading at end of file but lets in-flight tool calls run
+        on, so a write still checking its target would be sent after the
+        client had gone. The client's messages are relayed through a stream
+        whose end calls ``on_client_disconnect`` first.
+        """
         protocol_out = anyio.wrap_file(TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
         saved_stdout, sys.stdout = sys.stdout, sys.stderr
+        self.client_gone = False
         try:
             async with stdio_server(stdout=protocol_out) as (read_stream, write_stream):
-                await self._mcp_server.run(
-                    read_stream,
-                    write_stream,
-                    self._mcp_server.create_initialization_options(),
-                )
+                relay_send, relay_receive = anyio.create_memory_object_stream(0)
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(self._relay_until_eof, read_stream, relay_send)
+                    await self._mcp_server.run(
+                        relay_receive,
+                        write_stream,
+                        self._mcp_server.create_initialization_options(),
+                    )
+                    tg.cancel_scope.cancel()
+        except BaseExceptionGroup as group:
+            # Replies to calls that were still running cannot be delivered once
+            # the client is gone: that is a normal end, not a crash.
+            _, rest = group.split(_UNDELIVERABLE)
+            if not self.client_gone or rest is not None:
+                raise
+            log.info("dropped replies for the disconnected MCP client")
         finally:
             sys.stdout = saved_stdout
+
+    async def _relay_until_eof(self, source: Any, sink: Any) -> None:
+        try:
+            async with sink:
+                async for message in source:
+                    await sink.send(message)
+        finally:
+            self.client_gone = True
+            log.info("MCP client disconnected; stopping pending device requests")
+            if self.on_client_disconnect is not None:
+                self.on_client_disconnect()
 
 
 class BACnetMCPServer:
@@ -119,6 +166,7 @@ class BACnetMCPServer:
         )
         # serverInfo.version: this package's version, not the mcp SDK's default.
         self._server._mcp_server.version = package_version("bacnet-mcp")
+        self._server.on_client_disconnect = getattr(self.client, "client_disconnected", None)
         resources = ToolResources(
             client=self.client,
             config=self.tool_config,
