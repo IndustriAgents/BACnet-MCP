@@ -211,7 +211,7 @@ An object map is a JSON object keyed by alias. `device`, `object_type` and
 
 | Tool | What it does |
 |------|--------------|
-| `discover_devices` | Who-Is (broadcast, or to `address`), optional `low_limit`/`high_limit`, waits `timeout_ms`; returns each device's instance, address, vendor id, name, vendor and model |
+| `discover_devices` | Who-Is (broadcast, or to `address`), optional `low_limit`/`high_limit`, waits `timeout_ms`; returns each device's instance, address, vendor id, name, vendor and model. Names get at most 10 s more; `meta.details` says `complete` or `partial` |
 | `read_property` | ReadProperty of `device_id` / `object_type` / `object_instance` / `property_id` (default `present-value`), optional `array_index` and `address` |
 | `write_property` | WriteProperty of `value` with optional `priority` (1–16 except 6; `null`, or the string `"null"`, relinquishes); sent at most once; refused unless `BACNET_WRITES_ENABLED=true` |
 | `list_objects` | Lists the aliases loaded from `OBJECT_MAP_FILE` |

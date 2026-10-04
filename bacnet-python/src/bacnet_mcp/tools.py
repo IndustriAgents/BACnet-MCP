@@ -381,7 +381,9 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
                 model-name.
 
         Returns devices with device_id, address, vendor_id, max_apdu_length,
-        segmentation and (with include_details) name, vendor and model.
+        segmentation and (with include_details) name, vendor and model. Details
+        get at most 10 s after the Who-Is; meta.details is "complete", or
+        "partial" with details_partial set on the devices not fully read.
         """
 
         async def action() -> Envelope:

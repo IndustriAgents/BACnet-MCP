@@ -963,3 +963,32 @@ def test_a_disconnect_while_waiting_for_the_ack_is_unknown():
     assert (error.outcome, error.request_sent) == ("unknown", True)
     assert "may have been applied" in str(error)
     assert len(writes) == 1
+
+
+def test_discovery_details_have_a_budget(monkeypatch):
+    """A slow device cannot stretch discover_devices: details end up partial."""
+    from bacnet_mcp import bacnet_client
+
+    monkeypatch.setattr(bacnet_client, "DETAIL_BUDGET_S", 0.5)
+
+    async def scenario():
+        async with running_mock() as mock, running_client(apdu_timeout_ms=5000) as client:
+            original = mock.app.do_ReadPropertyRequest
+
+            async def slow_names(apdu):
+                if str(apdu.propertyIdentifier) == "vendor-name":
+                    await asyncio.sleep(5)
+                await original(apdu)
+
+            mock.app.do_ReadPropertyRequest = slow_names
+            start = time.perf_counter()
+            devices, meta = await client.discover_devices(300, mock_address(mock))
+            return devices, meta, time.perf_counter() - start
+
+    devices, meta, elapsed = run(scenario())
+    assert elapsed < 3
+    assert meta["details"] == "partial"
+    (device,) = devices
+    assert device["details_partial"] is True
+    assert device["name"] == "BACnet Mock Device"  # read before the budget ran out
+    assert device["vendor"] is None

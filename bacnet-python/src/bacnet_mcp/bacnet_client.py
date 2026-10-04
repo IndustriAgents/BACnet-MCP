@@ -117,6 +117,7 @@ PRE_EXECUTION_ABORTS = frozenset(
 # device sending them has already received the whole request: "unknown".
 
 REQUEST_SLACK_S = 2.0  # on top of the APDU timeout, for one request's deadline
+DETAIL_BUDGET_S = 10.0  # discover_devices: time for reading names after the Who-Is
 MAX_REAL = 3.4028234663852886e38  # largest finite IEEE 754 single
 
 
@@ -807,7 +808,11 @@ class BACnetClient:
         high_limit: int | None = None,
         include_details: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """Send Who-Is and collect the I-Am answers for ``timeout_ms``."""
+        """Send Who-Is and collect the I-Am answers for ``timeout_ms``.
+
+        The whole call takes at most ``timeout_ms`` plus DETAIL_BUDGET_S for
+        reading device names; details not read by then are marked partial.
+        """
         return await self._cancellable(
             lambda: self._discover_devices(
                 timeout_ms, address, low_limit, high_limit, include_details
@@ -849,6 +854,7 @@ class BACnetClient:
                     "segmentation": to_jsonable(i_am.segmentationSupported),
                 }
             )
+        details_state = "skipped"
         if include_details and devices:
             limit = asyncio.Semaphore(8)
 
@@ -856,11 +862,23 @@ class BACnetClient:
                 async with limit:
                     await self._add_details(device, sources[device["device_id"]])
 
-            await asyncio.gather(*(details(device) for device in devices))
+            tasks = [asyncio.ensure_future(details(device)) for device in devices]
+            _, pending = await asyncio.wait(tasks, timeout=DETAIL_BUDGET_S)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            details_state = "partial" if pending else "complete"
+            for device in devices:
+                missing = [key for key in ("name", "vendor", "model") if key not in device]
+                for key in missing:
+                    device[key] = None
+                if missing:
+                    device["details_partial"] = True
         meta = {
             "duration_ms": round((time.perf_counter() - start) * 1000.0, 3),
             "count": len(devices),
             "target": address or "global broadcast",
+            "details": details_state,
         }
         return devices, meta
 
