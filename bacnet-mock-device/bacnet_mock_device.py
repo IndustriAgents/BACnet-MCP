@@ -132,6 +132,21 @@ class MockBinaryValue(_RestrictedWrites, Commandable, LocalObject, _BinaryValueO
     _writable = frozenset({"presentValue"})
 
 
+class MockApplication(Application):
+    """bacpypes3 application with real-device answers to bad writes.
+
+    bacpypes3 answers a WriteProperty to a property the object does not have
+    with ``device: operational-problem`` (it fails while decoding the value);
+    a controller answers ``property: unknown-property``.
+    """
+
+    async def do_WritePropertyRequest(self, apdu) -> None:  # noqa: N802 - bacpypes3 name
+        obj = self.get_object_id(apdu.objectIdentifier)
+        if obj is not None and obj.get_property_type(apdu.propertyIdentifier) is None:
+            raise PropertyError("unknownProperty")
+        await super().do_WritePropertyRequest(apdu)
+
+
 def build_objects(device_id: int) -> list:
     """The device object and the simulated points."""
     return [
@@ -187,6 +202,21 @@ def check_bindable(addr: tuple[str, int]) -> None:
             raise MockConfigError(f"cannot bind UDP {addr[0]}:{addr[1]}: {exc.strerror}") from exc
 
 
+def _transport_tasks(app: Application) -> list[asyncio.Task]:
+    """bacpypes3's pending socket-binding tasks (it binds in the background)."""
+    tasks: list[asyncio.Task] = []
+    for link_layer in app.link_layers.values():
+        server = getattr(link_layer, "server", None)
+        tasks.extend(t for t in getattr(server, "_transport_tasks", []) if not t.done())
+    return tasks
+
+
+def _shutdown(app: Application) -> None:
+    for task in _transport_tasks(app):
+        task.cancel()
+    app.close()
+
+
 class BACnetMockDevice:
     """A bacpypes3 application serving the mock objects."""
 
@@ -215,9 +245,17 @@ class BACnetMockDevice:
             objectIdentifier=("network-port", 1),
             objectName="NetworkPort-1",
         )
-        self.app = Application.from_object_list(
+        app = MockApplication.from_object_list(
             [*build_objects(self.config.device_id), network_port]
         )
+        # Only report "listening" once the sockets are really bound.
+        pending = _transport_tasks(app)
+        if pending:
+            _, not_done = await asyncio.wait(pending, timeout=5)
+            if not_done:
+                _shutdown(app)
+                raise MockConfigError(f"timed out binding UDP {interface.ip}:{self.config.port}")
+        self.app = app
         for obj in self.analog_inputs:
             key = (str(obj.objectIdentifier[0]), obj.objectIdentifier[1])
             self._initial[key] = float(obj.presentValue)
@@ -239,8 +277,11 @@ class BACnetMockDevice:
                 pass
             self._drift_task = None
         if self.app is not None:
-            self.app.close()
+            _shutdown(self.app)
             self.app = None
+            # asyncio closes datagram sockets on the next loop iterations
+            for _ in range(3):
+                await asyncio.sleep(0)
 
     def drift_once(self) -> None:
         """Move every analog input by up to DRIFT_STEP, within DRIFT_SPAN."""

@@ -9,12 +9,13 @@ import sys
 from pathlib import Path
 
 import pytest
-from bacpypes3.apdu import ErrorRejectAbortNack
+from bacpypes3.apdu import ErrorRejectAbortNack, WritePropertyRequest
 from bacpypes3.app import Application
+from bacpypes3.constructeddata import Any as AnyValue
 from bacpypes3.local.device import DeviceObject
 from bacpypes3.local.networkport import NetworkPortObject
 from bacpypes3.pdu import Address
-from bacpypes3.primitivedata import Null
+from bacpypes3.primitivedata import Null, ObjectIdentifier, Real
 
 import bacnet_mock_device as mock_module
 from bacnet_mock_device import BACnetMockDevice, MockConfig, MockConfigError
@@ -167,6 +168,14 @@ def test_unknown_property_is_an_error():
         assert await error_of(read(client, addr, "analog-input,1", "priority-array")) == (
             "unknown-property"
         )
+        # bacpypes3 alone would answer this write with operational-problem
+        request = WritePropertyRequest(
+            objectIdentifier=ObjectIdentifier("analog-input,1"),
+            propertyIdentifier="priorityArray",
+            propertyValue=AnyValue(Real(1.0)),
+            destination=addr,
+        )
+        assert await error_of(client.request(request)) == "unknown-property"
 
     run_with_mock(scenario)
 
@@ -209,6 +218,21 @@ def test_drift_task_changes_values():
 def test_invalid_config_is_rejected(kwargs):
     with pytest.raises(MockConfigError):
         MockConfig(**kwargs)
+
+
+def test_start_returns_with_the_port_bound_and_stop_releases_it():
+    async def main():
+        mock = BACnetMockDevice(MockConfig(port=free_udp_port()))
+        await mock.start(drift=False)
+        port = mock.config.port
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            with pytest.raises(OSError):
+                probe.bind(("127.0.0.1", port))
+        await mock.stop()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.bind(("127.0.0.1", port))
+
+    asyncio.run(main())
 
 
 def test_busy_port_fails_fast():
