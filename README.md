@@ -36,7 +36,9 @@ Early, but real: the tools speak BACnet/IP. What works today:
   guessed: REALs must be finite, enumerations take a defined name or number,
   booleans go only to boolean and binary properties, priority 6 (reserved
   for minimum on/off) is refused, and a write too large for one message is
-  refused (segmented writes are not supported).
+  refused (segmented writes are not supported). If the MCP client cancels the
+  call or disconnects before the write has gone out, it is never sent
+  (`not_sent`); if it already went out, the result is `unknown`.
 - Every failure — a BACnet error, reject or abort, a timeout, a garbled
   reply, a datagram the OS refused to send, a bad or unknown argument —
   comes back as `success: false` with a readable `error`. Every request has

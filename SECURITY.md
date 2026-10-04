@@ -51,7 +51,8 @@ application on the office network.
   are annotated as not idempotent. The tool reports `meta.outcome: "unknown"`
   and asks for a read-back before any retry; treat that result as "may have
   happened". Before every write the server re-checks that the device at the
-  address is the one you named.
+  address is the one you named. A write the MCP client cancelled, or that
+  was still being prepared when the client disconnected, is never sent.
 - **Bind to one interface.** To reach real devices, set `BACNET_INTERFACE` to
   the host's address on the BAS network with its prefix length (for example
   `192.168.1.10/24`) rather than `0.0.0.0`, and pick a

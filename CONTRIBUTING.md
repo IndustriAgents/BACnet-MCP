@@ -142,6 +142,9 @@ These are shared with every server in the IndustriConnect suite:
   Write tools are `destructiveHint: true, idempotentHint: false`.
 - **Every request has a deadline.** No call may hang: a read gives up with an
   error, a write with outcome `unknown`.
+- **A gone client sends nothing.** When stdin closes, pending calls are
+  cancelled; the last check before a write is sent (closing flag, task
+  cancellation, no `await` in between) makes an unsent write `not_sent`.
 - **Never report what did not happen.** A tool returns `success: true` only
   for data that came from a device, or a write the device acknowledged.
   Nothing returns placeholder or made-up values; what is not implemented
