@@ -30,12 +30,24 @@ application on the office network.
   first, every time, before it gets near a real building.
 - **Writes stay off until you mean otherwise.** `BACNET_WRITES_ENABLED`
   defaults to `false`, and the write tools refuse to act until it is `true`.
+  The switch is read only from the process environment (e.g. the `env`
+  block of your MCP client's config) or from a file you name with
+  `bacnet-mcp --env-file PATH`. A `.env` that the server finds on its own in
+  its working directory — for a server started by an MCP client, often the
+  client's project, which you may not control — can set connection
+  settings but cannot turn writes on: the server ignores the switch there
+  and says so on stderr.
   Writes to a BACnet device move physical equipment (setpoints, outputs,
   schedules), there is no undo, and a language model will call a tool it has
   been given. Once writes are on, the model can write any property the device
   accepts: there is no per-object allow-list yet, so enable writes only for
   sessions that need them, and prefer a command `priority` that your
   operators recognise and can override.
+- **A write is sent at most once.** If the device does not answer, the
+  server does not retransmit (BACnet clients normally do, and a device whose
+  acknowledgement was lost would apply the write again). The tool reports
+  `meta.outcome: "unknown"` and asks for a read-back before any retry; treat
+  that result as "may have happened".
 - **Bind to one interface.** To reach real devices, set `BACNET_INTERFACE` to
   the host's address on the BAS network with its prefix length (for example
   `192.168.1.10/24`) rather than `0.0.0.0`, and pick a
@@ -60,9 +72,9 @@ bumped.
 
 Please report privately: by email to hi@industriagents.com, or through
 [GitHub private vulnerability reporting](https://github.com/IndustriAgents/BACnet-MCP/security/advisories/new)
-on this repository. If that link offers no report form, use
-[IndustriConnect's private vulnerability reporting](https://github.com/IndustriAgents/IndustriConnect/security/advisories/new),
-which covers every server in the suite, or the email address.
+on this repository.
+[IndustriConnect's private vulnerability reporting](https://github.com/IndustriAgents/IndustriConnect/security/advisories/new)
+covers every server in the suite and works too.
 
 Please do not open a public issue for a vulnerability.
 

@@ -102,6 +102,15 @@ rename or remove a tool.
 
 If you change dependencies, run `uv lock` in that project and commit the
 updated `uv.lock`; CI uses `--locked` and fails when the lockfile is stale.
+Dependency floors must be versions the tests pass on: CI's `lowest-direct`
+job installs the lowest versions the direct dependencies allow and runs both
+suites. To do the same locally (in either project):
+
+```bash
+uv venv --python 3.11 /path/to/scratch-venv
+uv pip install --python /path/to/scratch-venv/bin/python --resolution lowest-direct -e . --group dev
+/path/to/scratch-venv/bin/python -m pytest -q -p no:cacheprovider
+```
 
 Then drive the server the way a user would — through the Inspector or a real
 MCP client — call the tool you changed, and check the envelope, not just the
@@ -118,7 +127,14 @@ These are shared with every server in the IndustriConnect suite:
 - **One response envelope.** Every tool returns `{ success, data, error, meta }`.
 - **Read-only by default.** Anything that writes to a device stays separate
   from the read tools and refuses to act unless the server was started with
-  `BACNET_WRITES_ENABLED=true`; the default is `false`.
+  `BACNET_WRITES_ENABLED=true`; the default is `false`. A safety switch like
+  this comes only from the process environment or an explicit `--env-file`,
+  never from an automatically found `.env`.
+- **No duplicate writes.** A write reaches the device at most once: only
+  reads are retried. When a write's answer is lost, report
+  `success: false`, `meta.outcome: "unknown"`, `meta.request_sent: true`
+  ("may have been applied; read it back before retrying"). Write outcomes
+  are `written`, `rejected`, `unknown` or `not_sent`.
 - **Never report what did not happen.** A tool returns `success: true` only
   for data that came from a device, or a write the device acknowledged.
   Nothing returns placeholder or made-up values; what is not implemented
@@ -136,6 +152,11 @@ These are shared with every server in the IndustriConnect suite:
 - **A mock for every tool.** If you add a tool, the mock should be able to
   answer it, or nobody can test it without a building.
 - Every tool has a docstring: it is the description MCP clients show.
+- Instance numbers, indexes and priorities are strict integers: a boolean or
+  a numeric string is refused, never coerced.
+- `serverInfo.version` is this package's version.
+- A safety test must be able to fail: check that it fails when you remove
+  the protection it covers.
 - Keep tool and argument names aligned with the other IndustriConnect servers.
 
 ## Pull requests

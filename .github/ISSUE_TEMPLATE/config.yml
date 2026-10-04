@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: Question or usage help
-    url: https://github.com/IndustriAgents/IndustriConnect/discussions
+    url: https://github.com/IndustriAgents/BACnet-MCP/discussions
     about: Ask about configuration, MCP clients, or connecting to your own BACnet equipment.
   - name: Model Context Protocol docs
     url: https://modelcontextprotocol.io

@@ -26,7 +26,12 @@ Early, but real: the tools speak BACnet/IP. What works today:
 - **Writes**: `write_property` / `write_object_by_alias` send WriteProperty
   (with an optional priority, or `null` to relinquish a priority slot) and
   report success only when the device acknowledges. They are **off by
-  default** and refuse to act unless `BACNET_WRITES_ENABLED=true`.
+  default** and refuse to act unless `BACNET_WRITES_ENABLED=true` comes from
+  the process environment or `--env-file` (never from an automatically found
+  `.env`). A write goes out **at most once**: if no answer comes back it is
+  not retransmitted, and the result is `success: false` with
+  `meta.outcome: "unknown"` — the write may have been applied, so read it
+  back before retrying.
 - Every failure — a BACnet error, reject or abort, a timeout, a datagram the
   OS refused to send, a bad or unknown argument — comes back as
   `success: false` with a readable `error`. Bad settings stop the server at
@@ -151,15 +156,22 @@ config) or in a `.env` file.
 | `BACNET_INTERFACE` | `127.0.0.1` | IPv4 address to bind, optionally with a prefix length (`192.168.1.10/24`); the prefix sets the broadcast address used for global Who-Is |
 | `BACNET_PORT` | `47808` | Local BACnet/IP UDP port |
 | `BACNET_DEVICE_INSTANCE` | `1234` | Device instance the server presents on the network (pick one no real device uses) |
-| `BACNET_WRITES_ENABLED` | `false` | `true` (or `1`, `yes`, `on`) allows the write tools; otherwise they refuse every write. Anything other than these or `false`/`0`/`no`/`off` is an error |
+| `BACNET_WRITES_ENABLED` | `false` | `true` (or `1`, `yes`, `on`) allows the write tools; otherwise they refuse every write. Anything other than these or `false`/`0`/`no`/`off` is an error. **Read only from the process environment or `--env-file`**, see below |
 | `BACNET_APDU_TIMEOUT_MS` | `3000` | How long to wait for a device's answer before retrying (100–60000) |
-| `BACNET_APDU_RETRIES` | `3` | Retries after a timeout (0–10) |
+| `BACNET_APDU_RETRIES` | `3` | Retries of a *read* after a timeout (0–10); writes are never retried |
 | `BACNET_LOG_LEVEL` | `WARNING` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`; logs always go to stderr |
 | `OBJECT_MAP_FILE` | unset | JSON file of aliases for the `*_by_alias` tools |
 
 `bacnet-mcp` loads a `.env` file from its working directory (or the nearest
-parent that has one) before it reads any of these. Values already set in the
-process environment win over the file. An invalid value (say
+parent that has one) before it reads any of these; see
+[`bacnet-python/.env.example`](bacnet-python/.env.example). Values already
+set in the process environment win over the file. Such a `.env` may set
+connection settings but **not** `BACNET_WRITES_ENABLED`: an MCP client that
+starts the server directly runs it in the client's project, whose `.env` you
+may not control, so the server ignores the switch there with a warning on
+stderr. To keep the switch in a file, name the file explicitly:
+`bacnet-mcp --env-file /path/to/bacnet.env` (add `"--env-file", "…"` to the
+`args` in your MCP client's config). An invalid value (say
 `BACNET_WRITES_ENABLED=maybe`), an object map that cannot be read or parsed,
 a UDP port that is already in use, or a broadcast address that cannot be
 bound stops the server at startup with a message on stderr. The object map
@@ -191,7 +203,13 @@ An object map is a JSON object keyed by alias. `device`, `object_type` and
 
 Every tool returns `{ "success": bool, "data": ..., "error": str | null, "meta": {...} }`,
 including for invalid arguments. An argument a tool does not take (say a
-misspelt `priorty`) is an error, not silently ignored.
+misspelt `priorty`) is an error, not silently ignored, and instance numbers,
+indexes and priorities must be JSON integers (`true` or `"8"` is refused).
+
+The write tools also report `meta.outcome` and `meta.request_sent`:
+`written` (the device acknowledged), `rejected` (the device refused it),
+`unknown` (it was sent and no answer came back: it may have been applied,
+read it back before retrying) or `not_sent` (refused before sending).
 
 ## Layout
 
@@ -221,13 +239,15 @@ includes this repository as the `BACnet-Project` git submodule, tracking `main`.
 
 Development happens here: issues and pull requests for the BACnet server belong
 in [IndustriAgents/BACnet-MCP](https://github.com/IndustriAgents/BACnet-MCP),
-not in IndustriConnect. See [CONTRIBUTING.md](CONTRIBUTING.md).
+not in IndustriConnect. See [CONTRIBUTING.md](CONTRIBUTING.md). Questions and
+ideas are welcome in [Discussions](https://github.com/IndustriAgents/BACnet-MCP/discussions).
 
 ## Security
 
 BACnet/IP has no authentication or encryption, and the server joins the BACnet
 network as a device. Read [SECURITY.md](SECURITY.md) before pointing it at
-anything real, and report vulnerabilities privately as described there.
+anything real, and report vulnerabilities privately as described there
+([private vulnerability reporting](https://github.com/IndustriAgents/BACnet-MCP/security/advisories/new)).
 
 ## License
 

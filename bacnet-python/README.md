@@ -29,10 +29,14 @@ uv run bacnet-mcp
 
 By default the server binds UDP `127.0.0.1:47808`, has no broadcast address
 (so discovery needs a target `address`, such as the mock's `127.0.0.1:47809`)
-and refuses writes. Environment variables (or a `.env` file in the working
-directory) configure the interface and prefix, port, device instance, write
-switch, timeouts, log level and the optional object map; see
-[Configuration](../README.md#configuration) for the full list.
+and refuses writes. Environment variables configure the interface and prefix,
+port, device instance, write switch, timeouts, log level and the optional
+object map; see [Configuration](../README.md#configuration) for the full
+list and [`.env.example`](.env.example) for a `.env` file. The write switch
+`BACNET_WRITES_ENABLED` is read only from the process environment or a file
+named with `--env-file`, never from an automatically found `.env`.
+
+`bacnet-mcp --help` lists the options (`--env-file PATH`, `--version`).
 
 The process speaks MCP JSON-RPC on stdout and nothing else: all logging goes
 to stderr, and while the server runs `sys.stdout` points at stderr too.
@@ -60,6 +64,7 @@ bacnet-python/
 ├── pyproject.toml
 ├── uv.lock
 ├── .python-version
+├── .env.example
 ├── src/bacnet_mcp
 │   ├── __init__.py
 │   ├── cli.py            # entry point: .env, stderr logging, startup checks
