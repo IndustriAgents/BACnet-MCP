@@ -24,10 +24,7 @@ def test_environment_is_read_when_the_client_is_built_not_at_import(clean_env):
 
 def test_dotenv_values_reach_the_client(clean_env, tmp_path, monkeypatch):
     (tmp_path / ".env").write_text(
-        "BACNET_INTERFACE=127.0.0.1\n"
-        "BACNET_PORT=47998\n"
-        "BACNET_DEVICE_INSTANCE=4321\n"
-        "BACNET_WRITES_ENABLED=true\n",
+        "BACNET_INTERFACE=127.0.0.1\nBACNET_PORT=47998\nBACNET_DEVICE_INSTANCE=4321\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
@@ -35,7 +32,57 @@ def test_dotenv_values_reach_the_client(clean_env, tmp_path, monkeypatch):
     server = BACnetMCPServer()
     assert server.client.config.port == 47998
     assert server.client.config.device_instance == 4321
-    assert server.client.config.writes_enabled is True
+
+
+def test_an_implicit_dotenv_cannot_enable_writes(clean_env, tmp_path, monkeypatch, capsys):
+    # Started by an MCP client, the working directory is the client's project,
+    # which may not be trusted: its .env must not be able to turn writes on.
+    (tmp_path / ".env").write_text(
+        "BACNET_PORT=47994\nBACNET_WRITES_ENABLED=true\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    cli.load_environment()
+    config = BACnetConfig.from_env()
+    assert config.writes_enabled is False
+    assert config.port == 47994  # connection settings still apply
+    assert "ignoring BACNET_WRITES_ENABLED" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "name", ["BACNET_WRITES_ENABLED", "OTHER_SYSTEM_CMDS_ENABLED", "X_STATE_CHANGE_ENABLED"]
+)
+def test_every_safety_switch_is_ignored_in_an_implicit_dotenv(
+    clean_env, tmp_path, monkeypatch, capsys, name
+):
+    (tmp_path / ".env").write_text(f"{name}=true\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    cli.load_environment()
+    assert name not in clean_env
+    assert f"ignoring {name}" in capsys.readouterr().err
+
+
+def test_an_explicit_env_file_can_enable_writes(clean_env, tmp_path, monkeypatch, capsys):
+    env_file = tmp_path / "bacnet.env"
+    env_file.write_text("BACNET_WRITES_ENABLED=true\nBACNET_PORT=47993\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    cli.load_environment(env_file)
+    config = BACnetConfig.from_env()
+    assert config.writes_enabled is True
+    assert config.port == 47993
+    assert capsys.readouterr().err == ""
+
+
+def test_a_missing_env_file_is_a_config_error(clean_env, tmp_path):
+    with pytest.raises(ConfigError, match="--env-file"):
+        cli.load_environment(tmp_path / "nope.env")
+
+
+def test_the_process_environment_still_enables_writes(clean_env, tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("BACNET_WRITES_ENABLED=false\n", encoding="utf-8")
+    clean_env["BACNET_WRITES_ENABLED"] = "true"
+    monkeypatch.chdir(tmp_path)
+    cli.load_environment()
+    assert BACnetConfig.from_env().writes_enabled is True
 
 
 def test_dotenv_is_found_from_a_subdirectory(clean_env, tmp_path, monkeypatch):

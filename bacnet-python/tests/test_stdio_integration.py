@@ -373,9 +373,9 @@ def test_startup_fails_cleanly_on_bad_configuration(tmp_path, settings, message)
 
 
 def test_a_dotenv_in_the_working_directory_is_used(tmp_path):
-    (tmp_path / ".env").write_text("BACNET_WRITES_ENABLED=maybe\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("BACNET_PORT=not-a-port\n", encoding="utf-8")
     env = server_env(writes=False)
-    del env["BACNET_WRITES_ENABLED"]
+    del env["BACNET_PORT"]
     result = subprocess.run(
         SERVER_COMMAND,
         input="",
@@ -386,4 +386,29 @@ def test_a_dotenv_in_the_working_directory_is_used(tmp_path):
         timeout=60,
     )
     assert result.returncode == 1
-    assert "BACNET_WRITES_ENABLED must be true or false, got 'maybe'" in result.stderr
+    assert "BACNET_PORT must be an integer, got 'not-a-port'" in result.stderr
+
+
+def ping_writes_enabled(cwd: Path, env: dict[str, str], extra_args: list[str]) -> tuple[bool, str]:
+    returncode, lines, responses, stderr = raw_session(
+        SERVER_COMMAND + extra_args, isolated_env(**env), cwd, [tool_call(2, "ping", {})]
+    )
+    assert returncode == 0, stderr
+    return responses[2]["result"]["structuredContent"]["data"]["writes_enabled"], stderr
+
+
+def test_a_dotenv_in_the_working_directory_cannot_enable_writes(tmp_path):
+    (tmp_path / ".env").write_text("BACNET_WRITES_ENABLED=true\n", encoding="utf-8")
+    env = server_env(writes=False)
+    del env["BACNET_WRITES_ENABLED"]
+    enabled, stderr = ping_writes_enabled(tmp_path, env, [])
+    assert enabled is False
+    assert "ignoring BACNET_WRITES_ENABLED" in stderr
+
+
+def test_an_explicit_env_file_can_enable_writes(tmp_path):
+    (tmp_path / "bacnet.env").write_text("BACNET_WRITES_ENABLED=true\n", encoding="utf-8")
+    env = server_env(writes=False)
+    del env["BACNET_WRITES_ENABLED"]
+    enabled, _ = ping_writes_enabled(tmp_path, env, ["--env-file", str(tmp_path / "bacnet.env")])
+    assert enabled is True

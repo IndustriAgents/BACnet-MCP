@@ -2,23 +2,80 @@
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
+import re
 import sys
+from importlib.metadata import version
+from pathlib import Path
 
-from dotenv import find_dotenv, load_dotenv
+from dotenv import dotenv_values, find_dotenv
 
 from .bacnet_client import BACnetClientError, ConfigError
 from .server import BACnetMCPServer
 
+# Safety switches: they turn on something that changes devices. They are read
+# only from the process environment or a file named with --env-file, never
+# from a .env that happens to be in the working directory, which for a server
+# started directly by an MCP client is the client's (possibly untrusted)
+# project. The pattern covers the names the IndustriConnect servers use.
+GATE_VARIABLES = frozenset({"BACNET_WRITES_ENABLED"})
+_GATE_PATTERN = re.compile(r"_(WRITES|SYSTEM_CMDS|CONFIG_CMDS|STATE_CHANGE)_ENABLED$")
 
-def load_environment() -> None:
-    """Load ``.env`` from the working directory (or the nearest parent).
 
-    Values already in the process environment win over the file. This runs
-    before anything reads the configuration.
+def is_gate(name: str) -> bool:
+    return name in GATE_VARIABLES or bool(_GATE_PATTERN.search(name))
+
+
+def load_environment(env_file: str | Path | None = None) -> None:
+    """Load settings from a .env file before anything reads the configuration.
+
+    Values already in the process environment always win. With ``env_file``
+    (``--env-file``) every variable in that file is used, safety switches
+    included. Otherwise the ``.env`` found from the working directory (or the
+    nearest parent) is used for everything except safety switches, which are
+    ignored with a warning on stderr.
     """
-    load_dotenv(find_dotenv(usecwd=True))
+    if env_file is not None:
+        path = Path(env_file).expanduser()
+        if not path.is_file():
+            raise ConfigError(f"--env-file {env_file}: no such file")
+        explicit = True
+    else:
+        found = find_dotenv(usecwd=True)
+        if not found:
+            return
+        path = Path(found)
+        explicit = False
+    for name, value in dotenv_values(path).items():
+        if value is None:
+            continue
+        if not explicit and is_gate(name):
+            print(
+                f"bacnet-mcp: ignoring {name} from {path}: safety switches are read only "
+                "from the process environment or a file given with --env-file",
+                file=sys.stderr,
+            )
+            continue
+        os.environ.setdefault(name, value)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="bacnet-mcp",
+        description="BACnet/IP MCP server (speaks MCP over stdio). Configured with "
+        "BACNET_* environment variables; see the README.",
+    )
+    parser.add_argument(
+        "--env-file",
+        metavar="PATH",
+        help="read settings from this file, safety switches such as "
+        "BACNET_WRITES_ENABLED included (an automatically found .env may not set "
+        "them); the process environment still wins",
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {version('bacnet-mcp')}")
+    return parser.parse_args(argv)
 
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
@@ -47,9 +104,10 @@ def _leaves(exc: BaseException) -> list[BaseException]:
     return [exc]
 
 
-def main() -> None:
-    load_environment()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     try:
+        load_environment(args.env_file)
         configure_logging()
         server = BACnetMCPServer()
         if server.object_map.error:
