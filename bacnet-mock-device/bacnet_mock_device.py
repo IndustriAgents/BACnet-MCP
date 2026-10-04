@@ -114,6 +114,10 @@ class MockDeviceObject(_RestrictedWrites, DeviceObject):
     pass
 
 
+class MockNetworkPort(_RestrictedWrites, NetworkPortObject):
+    pass
+
+
 class MockAnalogInput(_RestrictedWrites, AnalogInputObject):
     pass
 
@@ -206,7 +210,7 @@ class BACnetMockDevice:
         if interface.network.prefixlen < 32 and os.name != "nt":
             check_bindable((str(interface.network.broadcast_address), self.config.port))
 
-        network_port = NetworkPortObject(
+        network_port = MockNetworkPort(
             self.config.bacnet_address,
             objectIdentifier=("network-port", 1),
             objectName="NetworkPort-1",

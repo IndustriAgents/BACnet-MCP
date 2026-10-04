@@ -155,6 +155,8 @@ def test_read_only_properties_refuse_writes():
         assert err == "write-access-denied"
         err = await error_of(client.write_property(addr, "analog-output,1", "units", "percent"))
         assert err == "write-access-denied"
+        err = await error_of(client.write_property(addr, "network-port,1", "object-name", "x"))
+        assert err == "write-access-denied"
         assert await read(client, addr, "analog-input,1") == pytest.approx(72.5)
 
     run_with_mock(scenario)
