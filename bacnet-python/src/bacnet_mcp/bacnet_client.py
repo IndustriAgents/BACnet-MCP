@@ -57,6 +57,9 @@ DEFAULT_INTERFACE = "127.0.0.1"
 DEFAULT_PORT = 47808
 DEFAULT_DEVICE_INSTANCE = 1234
 DEFAULT_APDU_TIMEOUT_MS = 3000
+# Typical BACnet APDU timeouts are 3-10 s; above 30 s a single request would
+# outlast an MCP client's own timeout.
+MAX_APDU_TIMEOUT_MS = 30000
 DEFAULT_APDU_RETRIES = 3
 
 MAX_DEVICE_INSTANCE = 4194302  # 4194303 is the "any device" wildcard
@@ -204,9 +207,10 @@ class BACnetConfig:
                 f"BACNET_DEVICE_INSTANCE must be 0-{MAX_DEVICE_INSTANCE}, "
                 f"got {self.device_instance}"
             )
-        if not 100 <= self.apdu_timeout_ms <= 60000:
+        if not 100 <= self.apdu_timeout_ms <= MAX_APDU_TIMEOUT_MS:
             raise ConfigError(
-                f"BACNET_APDU_TIMEOUT_MS must be 100-60000, got {self.apdu_timeout_ms}"
+                f"BACNET_APDU_TIMEOUT_MS must be 100-{MAX_APDU_TIMEOUT_MS}, "
+                f"got {self.apdu_timeout_ms}"
             )
         if not 0 <= self.apdu_retries <= 10:
             raise ConfigError(f"BACNET_APDU_RETRIES must be 0-10, got {self.apdu_retries}")
@@ -746,9 +750,14 @@ class BACnetClient:
 
     @property
     def read_deadline(self) -> float:
-        """Seconds a whole read call may take: identity check and read, retries included."""
+        """Seconds a whole read call may take: identity check and read, retries included.
+
+        At least two request windows (one identity attempt and the read),
+        otherwise (retries + 1) of each, capped at WRITE_DEADLINE_CAP_S.
+        """
         rounds = 2 * (self.config.apdu_retries + 1)
-        return max(self.request_deadline, min(WRITE_DEADLINE_CAP_S, rounds * self.request_deadline))
+        capped = min(WRITE_DEADLINE_CAP_S, rounds * self.request_deadline)
+        return max(2 * self.request_deadline, capped)
 
     @property
     def write_deadline(self) -> float:
@@ -756,12 +765,17 @@ class BACnetClient:
 
         It covers finding and re-checking the device as well as the
         WriteProperty itself; a write is only sent while a full reply window
-        (request_deadline) is left. Kept under 50 s with the defaults (25 s),
-        so the server, not an MCP client's own 60 s timeout (which sends no
-        cancellation), decides the outcome.
+        (request_deadline) is left, so at least one more window is always
+        reserved for the preparation (one identity-check attempt). That is
+        (retries + 2) windows capped at 45 s, but never less than two windows:
+        25 s with the defaults, 64 s at the largest APDU timeout (30 s). Kept
+        well under 50 s with typical settings, so the server, not an MCP
+        client's own 60 s timeout (which sends no cancellation), decides the
+        outcome.
         """
         rounds = self.config.apdu_retries + 2  # the identity check's attempts + the write
-        return max(self.request_deadline, min(WRITE_DEADLINE_CAP_S, rounds * self.request_deadline))
+        capped = min(WRITE_DEADLINE_CAP_S, rounds * self.request_deadline)
+        return max(2 * self.request_deadline, capped)
 
     async def _read_request(
         self, app: Application, make_request: Callable[[], Any], device_id: int

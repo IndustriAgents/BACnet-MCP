@@ -45,11 +45,13 @@ Early, but real: the tools speak BACnet/IP. What works today:
   a deadline (`BACNET_APDU_TIMEOUT_MS` + 2 s per attempt), so no call hangs.
   Each tool call also has ONE overall deadline from the moment it starts,
   shared by every request it makes (identity-check attempts, Who-Is
-  fallback, retries, the WriteProperty) and never restarted: for a write
-  (`BACNET_APDU_RETRIES` + 2) × that window, for a read twice
-  (`BACNET_APDU_RETRIES` + 1) × the window, each at most 45 s (25 s and 40 s
-  by default). If finding and checking the device leaves no full reply
-  window, the write is `not_sent` and is never sent later.
+  fallback, retries, the WriteProperty) and never restarted. For a write it
+  is (`BACNET_APDU_RETRIES` + 2) request windows and for a read twice
+  (`BACNET_APDU_RETRIES` + 1), capped at 45 s but never less than two
+  windows, so one is always left to prepare a write: 25 s and 40 s with the
+  defaults, at most 64 s at the largest APDU timeout (30 s). If finding and
+  checking the device leaves no full reply window, the write is `not_sent`
+  and is never sent later.
   Bad settings stop the server at startup.
 - CI runs the server against the mock over BACnet/IP on the runner's loopback
   interface, through a real MCP stdio session.
@@ -175,7 +177,7 @@ config), in a file given with `--env-file`, or (connection settings only) in
 | `BACNET_PORT` | `47808` | Local BACnet/IP UDP port |
 | `BACNET_DEVICE_INSTANCE` | `1234` | Device instance the server presents on the network (pick one no real device uses) |
 | `BACNET_WRITES_ENABLED` | `false` | `true` (or `1`, `yes`, `on`) allows the write tools; otherwise they refuse every write. Anything other than these or `false`/`0`/`no`/`off` is an error. **Read only from the process environment or `--env-file`**, see below |
-| `BACNET_APDU_TIMEOUT_MS` | `3000` | How long to wait for a device's answer (100–60000); each request is given up 2 s after that |
+| `BACNET_APDU_TIMEOUT_MS` | `3000` | How long to wait for a device's answer (100–30000; typical BACnet values are 3–10 s); each request is given up 2 s after that |
 | `BACNET_APDU_RETRIES` | `3` | How often the server retries a *read* that got no answer (0–10); writes are never retried |
 | `BACNET_LOG_LEVEL` | `WARNING` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`; logs always go to stderr |
 | `OBJECT_MAP_FILE` | unset | JSON file of aliases for the `*_by_alias` tools. **Read only from the process environment or `--env-file`**: it decides where alias writes go |
