@@ -6,6 +6,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from importlib.metadata import version as package_version
 from io import TextIOWrapper
 from typing import Any
 
@@ -116,6 +117,8 @@ class BACnetMCPServer:
             ),
             lifespan=self._lifespan,
         )
+        # serverInfo.version: this package's version, not the mcp SDK's default.
+        self._server._mcp_server.version = package_version("bacnet-mcp")
         resources = ToolResources(
             client=self.client,
             config=self.tool_config,

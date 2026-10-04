@@ -5,13 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+from importlib.metadata import version
 from typing import Any
 
+import anyio
 import pytest
 from bacpypes3.apdu import AbortPDU
 from bacpypes3.primitivedata import Real
 from helpers import MOCK_DEVICE_ID, client_config, mock_address, mock_object, running_mock
-from mcp.shared.memory import create_connected_server_and_client_session
+from mcp import ClientSession
+from mcp.shared.memory import (
+    create_client_server_memory_streams,
+    create_connected_server_and_client_session,
+)
 
 from bacnet_mcp.bacnet_client import BACnetClient, BACnetClientError, BACnetConfig, WriteError
 from bacnet_mcp.server import BACnetMCPServer
@@ -646,3 +652,24 @@ def test_booleans_and_numeric_strings_are_not_integers(tool, arguments, field):
     assert envelope["success"] is False
     assert f"Invalid arguments: {field}" in envelope["error"]
     assert client.calls == []
+
+
+def test_server_info_reports_this_packages_version():
+    server = make_server()
+
+    async def main():
+        async with create_client_server_memory_streams() as (client_streams, server_streams):
+            lowlevel = server.mcp._mcp_server
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(
+                    lambda: lowlevel.run(*server_streams, lowlevel.create_initialization_options())
+                )
+                async with ClientSession(*client_streams) as session:
+                    result = await session.initialize()
+                tg.cancel_scope.cancel()
+        return result
+
+    result = asyncio.run(main())
+    assert result.serverInfo.name == "BACnet MCP Server"
+    assert result.serverInfo.version == version("bacnet-mcp")
+    assert result.serverInfo.version != version("mcp")
