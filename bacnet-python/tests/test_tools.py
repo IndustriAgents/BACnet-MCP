@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from typing import Any
 
 import pytest
 from bacpypes3.apdu import AbortPDU
+from bacpypes3.primitivedata import Real
 from helpers import MOCK_DEVICE_ID, client_config, mock_address, mock_object, running_mock
 from mcp.shared.memory import create_connected_server_and_client_session
 
@@ -448,3 +450,76 @@ def test_descriptions_are_dedented():
         assert tool.description == tool.description.strip()
         body = [line for line in tool.description.splitlines()[1:] if line.strip()]
         assert min(len(line) - len(line.lstrip()) for line in body) == 0, tool.name
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments", "unknown"),
+    [
+        ("write_property", {**WRITE, "value": 12, "priorty": 8}, "priorty"),
+        ("read_property", {**READ, "adress": "10.0.0.5"}, "adress"),
+        ("ping", {"verbose": True}, "verbose"),
+    ],
+)
+def test_unknown_arguments_are_refused_not_ignored(tool, arguments, unknown):
+    # A misspelt "priorty" used to be dropped silently: the write went out
+    # without a priority and reported success.
+    client = FakeClient(writes_enabled=True)
+
+    async def scenario(session):
+        return await call(session, tool, arguments)
+
+    envelope = with_session(make_server(client), scenario)
+    assert envelope["success"] is False
+    assert f"Unknown argument(s): {unknown}" in envelope["error"]
+    assert client.calls == []
+
+
+def test_the_string_null_relinquishes_like_null():
+    # The MCP SDK turns the JSON string "null" into null before validation;
+    # the tool descriptions say so.
+    client = FakeClient(writes_enabled=True)
+
+    async def scenario(session):
+        return await call(session, "write_property", {**WRITE, "value": "null", "priority": 16})
+
+    envelope = with_session(make_server(client), scenario)
+    assert envelope["success"] is True
+    assert client.calls[0][1]["value"] is None
+
+
+def test_object_map_that_is_a_directory_is_reported_as_unreadable(tmp_path):
+    server = make_server(object_map=tmp_path)
+
+    async def scenario(session):
+        return await call(session, "list_objects", {})
+
+    envelope = with_session(server, scenario)
+    assert envelope["success"] is False
+    assert "cannot read object map" in envelope["error"]
+
+
+def test_non_finite_values_survive_strict_json():
+    """NaN/Infinity from a faulted sensor must not become null or invalid JSON."""
+
+    def reject(constant):
+        raise ValueError(f"non-standard JSON constant {constant}")
+
+    async def main():
+        async with running_mock() as mock:
+            mock_object(mock, "analog-input", 1).presentValue = Real(math.inf)
+            server = BACnetMCPServer(client=BACnetClient(client_config()), tool_config=ToolConfig())
+            async with create_connected_server_and_client_session(server.mcp) as session:
+                result = await session.call_tool(
+                    "read_property",
+                    {
+                        "device_id": MOCK_DEVICE_ID,
+                        "object_type": "analog-input",
+                        "object_instance": 1,
+                        "address": mock_address(mock),
+                    },
+                )
+        return json.loads(result.content[0].text, parse_constant=reject)
+
+    envelope = asyncio.run(main())
+    assert envelope["success"] is True
+    assert envelope["data"]["value"] == "Infinity"

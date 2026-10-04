@@ -35,9 +35,9 @@ def describe_validation_error(exc: ValidationError) -> str:
 class _BACnetFastMCP(FastMCP):
     """FastMCP with two guarantees on top.
 
-    - Arguments that fail FastMCP's type validation come back as the usual
-      ``{success: false, ...}`` envelope, like every other error, instead of
-      as an MCP error result.
+    - Arguments that fail FastMCP's type validation, or that the tool does not
+      take at all, come back as the usual ``{success: false, ...}`` envelope,
+      like every other error, instead of being an MCP error or ignored.
     - On stdio, stdout carries nothing but JSON-RPC: the transport owns the
       process's real stdout and, while the server runs, ``sys.stdout`` points
       at stderr, so a stray ``print()`` from this package or a library cannot
@@ -45,6 +45,19 @@ class _BACnetFastMCP(FastMCP):
     """
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        tool = self._tool_manager.get_tool(name)
+        if tool is not None:
+            # FastMCP drops arguments it does not know; a misspelt "priorty"
+            # would turn a priority-8 write into one without a priority.
+            known = set(tool.parameters.get("properties", {}))
+            unknown = sorted(set(arguments or {}) - known)
+            if unknown:
+                result = fail(
+                    f"Unknown argument(s): {', '.join(unknown)}; "
+                    f"{name} takes {', '.join(sorted(known)) or 'no arguments'}",
+                    {"tool": name},
+                )
+                return tool.fn_metadata.convert_result(result)
         try:
             return await super().call_tool(name, arguments)
         except ToolError as exc:

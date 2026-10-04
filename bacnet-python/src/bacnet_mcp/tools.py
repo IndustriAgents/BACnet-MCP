@@ -21,7 +21,13 @@ from bacpypes3.apdu import ErrorRejectAbortNack
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from .bacnet_client import MAX_DEVICE_INSTANCE, MAX_INSTANCE, BACnetClient, BACnetClientError
+from .bacnet_client import (
+    MAX_DEVICE_INSTANCE,
+    MAX_INSTANCE,
+    BACnetClient,
+    BACnetClientError,
+    ConfigError,
+)
 
 log = logging.getLogger(__name__)
 
@@ -119,7 +125,12 @@ class ToolConfig:
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ToolConfig:
         env = os.environ if environ is None else environ
         raw = env.get("OBJECT_MAP_FILE", "").strip()
-        return cls(object_map_path=Path(raw).expanduser() if raw else None)
+        if not raw:
+            return cls()
+        try:
+            return cls(object_map_path=Path(raw).expanduser())
+        except RuntimeError as exc:  # e.g. ~nosuchuser/objects.json
+            raise ConfigError(f"OBJECT_MAP_FILE {raw!r}: {exc}") from None
 
 
 class ObjectMap:
@@ -150,8 +161,14 @@ class ObjectMap:
             return
         self._mtime = mtime
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
+            text = self.path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            self._objects = {}
+            self.error = f"cannot read object map {self.path}: {exc}"
+            return
+        try:
+            data = json.loads(text)
+        except ValueError as exc:
             self._objects = {}
             self.error = f"object map {self.path} is not valid JSON: {exc}"
             return
@@ -412,8 +429,9 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
             object_instance: Object instance number.
             property_id: Property name, usually "present-value".
             value: New value: a number for analog objects, "active"/"inactive"
-                (or true/false) for binary objects, a string for text. null
-                relinquishes the given priority slot of a commandable object.
+                (or true/false) for binary objects, a string for text. null (or
+                the string "null") relinquishes the given priority slot of a
+                commandable object.
             priority: Command priority 1 (highest) to 16 (lowest) for
                 commandable objects; required with a null value.
             array_index: Optional array index for array properties.
@@ -485,8 +503,8 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
         Args:
             alias: An alias from the object map.
-            value: New value (see write_property); null relinquishes the alias's
-                priority slot.
+            value: New value (see write_property); null (or the string "null")
+                relinquishes the alias's priority slot.
         """
 
         async def action() -> Envelope:
