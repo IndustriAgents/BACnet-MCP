@@ -83,3 +83,31 @@ jobs:
       # client; nothing leaves the runner's loopback interface.
       - name: Tests
         run: uv run --locked pytest -v
+
+  # The declared floors must be versions the tests pass on: install the lowest
+  # versions the direct dependencies allow (dev tools included) in fresh venvs
+  # and run both test suites against them.
+  lowest-direct:
+    name: lowest direct dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Server tests with the lowest direct dependencies
+        working-directory: bacnet-python
+        run: |
+          uv venv --python 3.11 "$RUNNER_TEMP/lowest-server"
+          uv pip install --python "$RUNNER_TEMP/lowest-server/bin/python" --resolution lowest-direct -e . --group dev
+          "$RUNNER_TEMP/lowest-server/bin/python" -m pytest -q -p no:cacheprovider
+
+      - name: Mock tests with the lowest direct dependencies
+        working-directory: bacnet-mock-device
+        run: |
+          uv venv --python 3.11 "$RUNNER_TEMP/lowest-mock"
+          uv pip install --python "$RUNNER_TEMP/lowest-mock/bin/python" --resolution lowest-direct -e . --group dev
+          "$RUNNER_TEMP/lowest-mock/bin/python" -m pytest -q -p no:cacheprovider
