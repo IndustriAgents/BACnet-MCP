@@ -53,8 +53,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anyio", specifier = ">=4.5.0" },
-    { name = "bacpypes3", specifier = ">=0.0.110" },
+    { name = "anyio", specifier = ">=4.7.0" },
+    { name = "bacpypes3", specifier = ">=0.0.110,<0.0.111" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.22.0,<2" },
     { name = "pydantic", specifier = ">=2.11.0" },
     { name = "python-dotenv", specifier = ">=1.1.0" },

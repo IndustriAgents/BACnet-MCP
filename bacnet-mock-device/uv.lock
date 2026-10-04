@@ -17,7 +17,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "bacpypes3", specifier = ">=0.0.110" }]
+requires-dist = [{ name = "bacpypes3", specifier = ">=0.0.110,<0.0.111" }]
 
 [package.metadata.requires-dev]
 dev = [

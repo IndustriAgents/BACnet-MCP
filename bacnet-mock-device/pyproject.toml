@@ -7,7 +7,8 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "IndustriAgents" }]
 dependencies = [
-    "bacpypes3>=0.0.110",
+    # Pinned like the server's: the mock uses bacpypes3 internals.
+    "bacpypes3>=0.0.110,<0.0.111",
 ]
 
 [project.scripts]

@@ -6,11 +6,13 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "IndustriAgents" }]
-# Floors are the versions CI's lowest-direct job tests (anyio and pydantic are
-# what mcp 1.22 itself needs).
+# Floors are the versions CI's lowest-direct job resolves and tests (anyio and
+# pydantic are what mcp 1.22 and its dependencies need).
 dependencies = [
-    "anyio>=4.5.0",
-    "bacpypes3>=0.0.110",
+    "anyio>=4.7.0",
+    # Pinned: the server relies on bacpypes3 internals (transport tasks, the
+    # client state machine's retry count); re-verify before allowing a newer one.
+    "bacpypes3>=0.0.110,<0.0.111",
     # The server subclasses FastMCP and uses its internals; mcp 2.x renamed it.
     "mcp[cli]>=1.22.0,<2",
     "pydantic>=2.11.0",
