@@ -94,17 +94,13 @@ jobs:
       - name: Entry point help
         run: uv run --locked bacnet-mock-device --help
 
-      # Exercises the request handler directly; no TCP socket is opened.
-      - name: Answer discover/read requests in-process
-        run: |
-          uv run --locked python - <<'EOF'
-          from bacnet_mock_device import BACnetMockDevice, MockConfig
+      - name: Lint
+        run: uv run --locked ruff check .
 
-          device = BACnetMockDevice(MockConfig())
-          discover = device._dispatch({"op": "discover"})
-          read = device._dispatch({"op": "read", "object": "analog-input:1", "property": "present-value"})
-          print(discover)
-          print(read)
-          assert discover["success"] and discover["data"], discover
-          assert read["success"] and isinstance(read["data"]["value"], float), read
-          EOF
+      - name: Check formatting
+        run: uv run --locked ruff format --check .
+
+      # Starts the mock on free 127.0.0.1 ports and drives it with a bacpypes3
+      # client; nothing leaves the runner's loopback interface.
+      - name: Tests
+        run: uv run --locked pytest -v
