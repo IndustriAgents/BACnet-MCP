@@ -120,7 +120,7 @@ config.
 | `BACNET_INTERFACE` | `0.0.0.0` | Local address the BAC0 stack binds to (`0.0.0.0` is every interface) |
 | `BACNET_PORT` | `47808` | Local BACnet/IP UDP port |
 | `BACNET_DEVICE_INSTANCE` | `1234` | Device instance the server presents on the network |
-| `BACNET_WRITES_ENABLED` | `true` | Set to `false` to refuse every write tool |
+| `BACNET_WRITES_ENABLED` | `false` | Set to `true` to allow the write tools; otherwise they refuse every write |
 | `OBJECT_MAP_FILE` | unset | JSON file of aliases for the `*_by_alias` tools |
 
 An object map is a JSON object keyed by alias:
@@ -134,13 +134,9 @@ An object map is a JSON object keyed by alias:
 
 `property_id` defaults to `present-value`.
 
-`bacnet-mcp` also loads a `.env` file at startup, but only after the BAC0
-client has read its settings (they are read when the package is imported), so
-`BACNET_INTERFACE`, `BACNET_PORT` and `BACNET_DEVICE_INSTANCE` in a `.env` file
-are ignored. This is a known bug: a `BACNET_INTERFACE` set only in `.env` still
-leaves the server on `0.0.0.0`. `BACNET_WRITES_ENABLED` and `OBJECT_MAP_FILE`
-from `.env` do reach the tools, but `ping`'s `connection.writes_enabled` keeps
-the value from the process environment.
+`bacnet-mcp` also loads a `.env` file from its working directory (or the
+nearest parent that has one) at startup, before it reads any of these
+variables. Values already set in the process environment win over the file.
 
 ## Tools
 

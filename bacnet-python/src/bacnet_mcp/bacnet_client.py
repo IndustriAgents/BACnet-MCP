@@ -25,10 +25,24 @@ def _env_bool(name: str, default: bool) -> bool:
 
 @dataclass(slots=True)
 class BACnetConfig:
-    interface: str = os.getenv("BACNET_INTERFACE", "0.0.0.0")
-    port: int = int(os.getenv("BACNET_PORT", "47808"))
-    device_instance: int = int(os.getenv("BACNET_DEVICE_INSTANCE", "1234"))
-    writes_enabled: bool = _env_bool("BACNET_WRITES_ENABLED", True)
+    interface: str = "0.0.0.0"
+    port: int = 47808
+    device_instance: int = 1234
+    writes_enabled: bool = False
+
+    @classmethod
+    def from_env(cls) -> "BACnetConfig":
+        """Read the configuration from the environment at call time.
+
+        Called when the server is built, i.e. after the CLI has loaded .env, so
+        values from a .env file are honoured (they used to be read at import).
+        """
+        return cls(
+            interface=os.getenv("BACNET_INTERFACE", "0.0.0.0"),
+            port=int(os.getenv("BACNET_PORT", "47808")),
+            device_instance=int(os.getenv("BACNET_DEVICE_INSTANCE", "1234")),
+            writes_enabled=_env_bool("BACNET_WRITES_ENABLED", False),
+        )
 
 
 class BACnetClientError(RuntimeError):
@@ -39,7 +53,7 @@ class BACnetClient:
     """Thread-safe wrapper around BAC0 for MCP tools."""
 
     def __init__(self, config: Optional[BACnetConfig] = None) -> None:
-        self.config = config or BACnetConfig()
+        self.config = config or BACnetConfig.from_env()
         self._lock = threading.RLock()
         self._bacnet = None
         self._opened = False

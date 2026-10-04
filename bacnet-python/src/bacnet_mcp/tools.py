@@ -22,14 +22,14 @@ def _env_bool(name: str, default: bool) -> bool:
 
 @dataclass(slots=True)
 class ToolConfig:
-    writes_enabled: bool = True
+    writes_enabled: bool = False
     object_map_path: Optional[Path] = None
 
     @classmethod
     def from_env(cls) -> "ToolConfig":
         map_path = os.getenv("OBJECT_MAP_FILE")
         return cls(
-            writes_enabled=_env_bool("BACNET_WRITES_ENABLED", True),
+            writes_enabled=_env_bool("BACNET_WRITES_ENABLED", False),
             object_map_path=Path(map_path).expanduser() if map_path else None,
         )
 
