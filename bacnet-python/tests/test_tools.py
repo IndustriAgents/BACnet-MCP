@@ -619,3 +619,30 @@ def test_a_lost_ack_through_the_tool_is_unknown_and_sent_once():
     assert "the write may have been applied; read it back before retrying" in envelope["error"]
     assert count == 1
     assert value == 21.0
+
+
+@pytest.mark.parametrize(
+    ("tool", "arguments", "field"),
+    [
+        ("read_property", {**READ, "device_id": True}, "device_id"),
+        ("read_property", {**READ, "device_id": "12345"}, "device_id"),
+        ("read_property", {**READ, "object_instance": False}, "object_instance"),
+        ("read_property", {**READ, "object_instance": 1.0}, "object_instance"),
+        ("read_property", {**READ, "array_index": True}, "array_index"),
+        ("write_property", {**WRITE, "priority": True}, "priority"),
+        ("write_property", {**WRITE, "device_id": True}, "device_id"),
+        ("discover_devices", {"timeout_ms": True}, "timeout_ms"),
+        ("discover_devices", {"low_limit": True, "high_limit": 5}, "low_limit"),
+        ("discover_devices", {"include_details": 1}, "include_details"),
+    ],
+)
+def test_booleans_and_numeric_strings_are_not_integers(tool, arguments, field):
+    client = FakeClient(writes_enabled=True)
+
+    async def scenario(session):
+        return await call(session, tool, arguments)
+
+    envelope = with_session(make_server(client), scenario)
+    assert envelope["success"] is False
+    assert f"Invalid arguments: {field}" in envelope["error"]
+    assert client.calls == []

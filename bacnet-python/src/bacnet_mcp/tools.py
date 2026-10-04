@@ -20,6 +20,7 @@ from typing import Any
 from bacpypes3.apdu import ErrorRejectAbortNack
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
+from pydantic import StrictBool, StrictInt
 
 from .bacnet_client import (
     MAX_DEVICE_INSTANCE,
@@ -37,6 +38,8 @@ log = logging.getLogger(__name__)
 Envelope = dict[str, Any]
 # What a write tool accepts as a value: JSON scalars, or null to relinquish.
 WriteValue = bool | int | float | str | None
+# Numbers that identify things (instances, indexes, priorities, limits) are
+# strict: a boolean or a numeric string is refused, never coerced (true -> 1).
 
 MIN_TIMEOUT_MS = 100
 MAX_TIMEOUT_MS = 60000
@@ -342,11 +345,11 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
     @register(READ_ONLY)
     async def discover_devices(
-        timeout_ms: int = 3000,
+        timeout_ms: StrictInt = 3000,
         address: str | None = None,
-        low_limit: int | None = None,
-        high_limit: int | None = None,
-        include_details: bool = True,
+        low_limit: StrictInt | None = None,
+        high_limit: StrictInt | None = None,
+        include_details: StrictBool = True,
     ) -> Envelope:
         """Find BACnet devices with Who-Is and collect their I-Am answers.
 
@@ -390,11 +393,11 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
     @register(READ_ONLY)
     async def read_property(
-        device_id: int,
+        device_id: StrictInt,
         object_type: str,
-        object_instance: int,
+        object_instance: StrictInt,
         property_id: str = "present-value",
-        array_index: int | None = None,
+        array_index: StrictInt | None = None,
         address: str | None = None,
     ) -> Envelope:
         """Read one property of one object on a BACnet device (ReadProperty).
@@ -432,13 +435,13 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
     @register(WRITES_DEVICE)
     async def write_property(
-        device_id: int,
+        device_id: StrictInt,
         object_type: str,
-        object_instance: int,
+        object_instance: StrictInt,
         property_id: str,
         value: WriteValue,
-        priority: int | None = None,
-        array_index: int | None = None,
+        priority: StrictInt | None = None,
+        array_index: StrictInt | None = None,
         address: str | None = None,
     ) -> Envelope:
         """Write one property of one object on a BACnet device (WriteProperty).
