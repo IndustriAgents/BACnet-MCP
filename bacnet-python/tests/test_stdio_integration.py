@@ -268,23 +268,76 @@ def tool_call(request_id: int, name: str, arguments: dict[str, Any]) -> dict[str
 
 
 def test_stdout_carries_only_json_rpc(tmp_path):
+    """Every tool is called, unbuffered, at DEBUG: stdout must stay pure JSON-RPC."""
     with mock_process() as address:
+        (tmp_path / "objects.json").write_text(
+            json.dumps(
+                {
+                    "zone1": {**target("analog-input", 1), "address": address},
+                    "damper": {**target("analog-output", 1), "address": address, "priority": 8},
+                }
+            ).replace('"device_id"', '"device"'),
+            encoding="utf-8",
+        )
         requests = [
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
             tool_call(3, "discover_devices", {"address": address}),
             tool_call(4, "read_property", target("analog-input", 1)),
-            tool_call(5, "ping", {}),
+            tool_call(
+                5,
+                "write_property",
+                {**target("analog-output", 1, property_id="present-value"), "value": 40},
+            ),
+            tool_call(6, "list_objects", {}),
+            tool_call(7, "read_object_by_alias", {"alias": "zone1"}),
+            tool_call(8, "write_object_by_alias", {"alias": "damper", "value": None}),
+            tool_call(9, "ping", {}),
         ]
-        env = isolated_env(**server_env(writes=False), BACNET_LOG_LEVEL="DEBUG")
+        env = isolated_env(
+            **server_env(writes=True),
+            BACNET_LOG_LEVEL="DEBUG",
+            OBJECT_MAP_FILE=str(tmp_path / "objects.json"),
+            PYTHONUNBUFFERED="1",
+        )
         returncode, lines, responses, stderr = raw_session(SERVER_COMMAND, env, tmp_path, requests)
 
     assert returncode == 0, stderr
     for line in lines:
         assert json.loads(line)["jsonrpc"] == "2.0", line
-    assert responses[3]["result"]["structuredContent"]["success"] is True
-    assert responses[4]["result"]["structuredContent"]["success"] is True
+    called = {r["params"]["name"] for r in requests if r.get("method") == "tools/call"}
+    listed = {t["name"] for t in responses[2]["result"]["tools"]}
+    assert called == listed  # every tool, so a print() anywhere would show up
+    for request_id in range(3, 10):
+        envelope = responses[request_id]["result"]["structuredContent"]
+        assert envelope["success"] is True, envelope
     # DEBUG logging was on, and all of it went to stderr.
     assert "bacnet_mcp" in stderr
+
+
+def test_the_server_starts_without_a_device(tmp_path):
+    """initialize and tools/list work with nothing reachable; device tools fail cleanly."""
+    silent = f"127.0.0.1:{free_udp_port()}"
+    requests = [
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+        tool_call(3, "read_property", target("analog-input", 1, address=silent)),
+        tool_call(
+            4,
+            "write_property",
+            {**target("analog-output", 1, property_id="present-value", address=silent), "value": 1},
+        ),
+        tool_call(5, "ping", {}),
+    ]
+    env = isolated_env(**{**server_env(writes=True), "BACNET_APDU_RETRIES": "0"})
+    returncode, lines, responses, stderr = raw_session(SERVER_COMMAND, env, tmp_path, requests)
+    assert returncode == 0, stderr
+    assert responses[1]["result"]["serverInfo"]["name"] == "BACnet MCP Server"
+    assert len(responses[2]["result"]["tools"]) == 7
+    read = responses[3]["result"]["structuredContent"]
+    assert read["success"] is False and "no BACnet device answered" in read["error"]
+    write = responses[4]["result"]["structuredContent"]
+    assert write["success"] is False
+    assert (write["meta"]["outcome"], write["meta"]["request_sent"]) == ("not_sent", False)
+    assert responses[5]["result"]["structuredContent"]["success"] is True
 
 
 NOISY_SERVER = """
@@ -309,7 +362,7 @@ server = BACnetMCPServer(client=IdleClient(), tool_config=ToolConfig())
 @server.mcp.tool()
 async def noisy() -> dict:
     \"\"\"Print to stdout, as a careless library might.\"\"\"
-    print("noise from a library", flush=True)
+    print("noise from a library")
     return {"success": True, "data": None, "error": None, "meta": {}}
 
 
@@ -320,7 +373,7 @@ server.run()
 def test_print_to_stdout_cannot_corrupt_the_protocol(tmp_path):
     returncode, lines, responses, stderr = raw_session(
         [sys.executable, "-c", NOISY_SERVER],
-        isolated_env(),
+        isolated_env(PYTHONUNBUFFERED="1"),
         tmp_path,
         [tool_call(2, "noisy", {})],
     )
