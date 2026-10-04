@@ -7,8 +7,11 @@ asserted here comes from the mock over BACnet/IP on 127.0.0.1.
 from __future__ import annotations
 
 import asyncio
+import errno
+import math
 import socket
 import time
+from functools import partial
 
 import pytest
 from bacpypes3.apdu import ErrorRejectAbortNack
@@ -153,7 +156,7 @@ def test_read_errors_are_reported(object_type, instance, prop, message):
 def test_a_device_instance_is_checked_against_the_address():
     async def scenario():
         async with running_mock() as mock, running_client() as client:
-            with pytest.raises(BACnetClientError, match="no device 999 answered"):
+            with pytest.raises(BACnetClientError, match="is device 12345, not 999"):
                 await client.read_property(999, "analog-input", 1, address=mock_address(mock))
 
     run(scenario())
@@ -272,20 +275,38 @@ def test_close_releases_the_port():
 
 
 @pytest.mark.parametrize(
-    "address",
-    ["127.0.0.1:47809", "192.168.1.20", "2:5", "2:0x0a", "2:10.0.0.5"],
+    ("address", "expected"),
+    [
+        ("127.0.0.1:47809", "127.0.0.1:47809"),
+        ("192.168.1.20", "192.168.1.20"),
+        (" 10.0.0.5:47810 ", "10.0.0.5:47810"),
+    ],
 )
-def test_valid_addresses(address):
-    assert BACnetClient.parse_address(address) is not None
+def test_valid_addresses(address, expected):
+    assert str(BACnetClient.parse_address(address)) == expected
 
 
 @pytest.mark.parametrize(
-    "address",
-    ["", "abc", "localhost:47808", "1.2.3", "300.1.1.1", "127.0.0.1:99999", "0:5", "65535:5"],
+    ("address", "message"),
+    [
+        ("", "invalid BACnet address"),
+        ("abc", "invalid BACnet address"),
+        ("localhost:47808", "invalid BACnet address"),
+        ("1.2.3", "invalid BACnet address"),
+        ("300.1.1.1", "invalid BACnet address"),
+        ("127.0.0.1:99999", "port out of range"),
+        ("0.0.0.0", "not a device address"),
+        ("255.255.255.255", "not a device address"),
+        ("224.0.0.1:47808", "not a device address"),
+        ("2:5", "remote BACnet network"),
+        ("2:0x0a", "remote BACnet network"),
+        ("2:10.0.0.5", "remote BACnet network"),
+        ("2:*", "remote BACnet network"),
+    ],
 )
-def test_invalid_addresses_are_rejected_without_dns(address):
-    with pytest.raises(BACnetClientError, match="invalid BACnet address"):
-        BACnetClient.parse_address(address)
+def test_unusable_addresses_are_rejected_without_dns(address, message):
+    with pytest.raises(BACnetClientError, match=message):
+        BACnetClient.parse_address(address, allow_broadcast=True)
 
 
 def test_broadcast_addresses_only_for_discovery():
@@ -335,7 +356,7 @@ def test_the_servers_own_objects_refuse_writes_from_the_network():
     run(scenario())
 
 
-@pytest.mark.parametrize("address", ["*", "*:*", "2:*"])
+@pytest.mark.parametrize("address", ["*", "*:*"])
 def test_broadcast_discovery_without_a_broadcast_address_is_an_error(address):
     """It used to look like an empty network: the Who-Is was never sent."""
 
@@ -363,5 +384,119 @@ def test_booleans_are_only_written_to_boolean_or_enumerated_properties():
             assert float(mock_object(mock, "analog-output", 1).presentValue) == 50.0
             await client.write_property(MOCK_DEVICE_ID, "binary-value", 1, "present-value", True, 8)
             assert str(mock_object(mock, "binary-value", 1).presentValue) == "active"
+
+    run(scenario())
+
+
+def test_targets_the_interface_cannot_reach_are_refused():
+    """A loopback-bound server cannot reach 192.0.2.1: say so instead of timing out."""
+    client = BACnetClient(BACnetConfig())
+    with pytest.raises(BACnetClientError, match="bound to loopback"):
+        client._target("192.0.2.1")
+
+
+def test_the_subnet_broadcast_address_is_not_a_device():
+    client = BACnetClient(BACnetConfig(interface="192.168.1.10/24"))
+    with pytest.raises(BACnetClientError, match="broadcast address"):
+        client._target("192.168.1.255")
+    assert str(client._target("192.168.1.255", allow_broadcast=True)) == "*"
+    assert str(client._target("192.168.1.20:47809")) == "192.168.1.20:47809"
+
+
+def test_a_who_is_the_os_refused_to_send_is_an_error_not_an_empty_network():
+    async def scenario():
+        async with running_client() as client:
+            for link_layer in client._app.link_layers.values():
+                server = link_layer.server
+
+                def refuse(data, addr, _protocol=server.local_protocol):
+                    _protocol.error_received(OSError(errno.ENETUNREACH, "Network is unreachable"))
+
+                server.local_transport.sendto = refuse
+            with pytest.raises(BACnetClientError, match="could not be sent.*unreachable"):
+                await client.discover_devices(300, f"127.0.0.1:{free_udp_port()}")
+
+    run(scenario())
+
+
+def test_identity_is_confirmed_even_when_the_i_am_is_not_received():
+    """Many devices broadcast their I-Am, which a unicast-only socket never sees."""
+
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+
+            async def ignore_who_is(apdu):
+                return None
+
+            mock.app.do_WhoIsRequest = ignore_who_is
+            value, _ = await client.read_property(
+                MOCK_DEVICE_ID, "analog-input", 2, address=mock_address(mock)
+            )
+            assert value == pytest.approx(68.0)
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(math.inf, "Infinity"), (-math.inf, "-Infinity"), (math.nan, "NaN")],
+)
+def test_non_finite_values_are_named_not_nulled(raw, expected):
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            mock_object(mock, "analog-input", 1).presentValue = Real(raw)
+            value, _ = await client.read_property(
+                MOCK_DEVICE_ID, "analog-input", 1, address=mock_address(mock)
+            )
+            return value
+
+    assert run(scenario()) == expected
+
+
+def test_integer_valued_floats_can_be_written_to_integer_properties():
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            # Unsigned on the client side; the mock then refuses the write itself.
+            with pytest.raises(BACnetClientError) as caught:
+                await client.write_property(
+                    MOCK_DEVICE_ID,
+                    "analog-output",
+                    1,
+                    "time-delay",
+                    30.0,
+                    address=mock_address(mock),
+                )
+            assert "not valid" not in str(caught.value)
+            assert "BACnet error" in str(caught.value)
+            with pytest.raises(
+                BACnetClientError, match=r"not valid for time-delay \(Unsigned\): \S"
+            ):
+                await client.write_property(MOCK_DEVICE_ID, "analog-output", 1, "time-delay", 2.5)
+
+    run(scenario())
+
+
+def test_identity_falls_back_to_who_is_without_wildcard_support():
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            # bacpypes3's stock handler answers the wildcard with unknown-object
+            mock.app.do_ReadPropertyRequest = partial(Application.do_ReadPropertyRequest, mock.app)
+            value, _ = await client.read_property(
+                MOCK_DEVICE_ID, "analog-input", 2, address=mock_address(mock)
+            )
+            assert value == pytest.approx(68.0)
+            with pytest.raises(BACnetClientError, match="no device 999 answered a Who-Is"):
+                await client.read_property(999, "analog-input", 2, address=mock_address(mock))
+
+    run(scenario())
+
+
+def test_peers_can_read_the_servers_wildcard_device_instance():
+    async def scenario():
+        async with running_client(device_instance=4321) as client, running_mock() as mock:
+            identifier = await mock.app.read_property(
+                f"127.0.0.1:{client.config.port}", "device,4194303", "object-identifier"
+            )
+            assert (str(identifier[0]), identifier[1]) == ("device", 4321)
 
     run(scenario())
