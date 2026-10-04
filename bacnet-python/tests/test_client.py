@@ -904,7 +904,8 @@ def test_a_disconnect_just_before_sending_stops_the_write(monkeypatch):
 
 def test_a_disconnect_cancels_a_pending_write_and_blocks_new_calls():
     async def scenario():
-        async with running_mock() as mock, running_client() as client:
+        # A long APDU timeout, so the write really waits for the slow identity check.
+        async with running_mock() as mock, running_client(apdu_timeout_ms=5000) as client:
             writes = count_requests(mock, "do_WritePropertyRequest")
             original = mock.app.do_ReadPropertyRequest
 
@@ -926,8 +927,11 @@ def test_a_disconnect_cancels_a_pending_write_and_blocks_new_calls():
             )
             await asyncio.sleep(0.3)
             client.client_disconnected()
+            stopped = time.perf_counter()
             with pytest.raises(WriteError) as first:
                 await pending
+            # Cancelled at once, not after the identity check comes back (1 s).
+            assert time.perf_counter() - stopped < 0.5
             with pytest.raises(WriteError) as later:
                 await client.write_property(
                     MOCK_DEVICE_ID, "analog-output", 1, "present-value", 6.0, 8

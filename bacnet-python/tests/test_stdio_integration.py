@@ -481,7 +481,7 @@ def test_an_explicit_env_file_can_enable_writes(tmp_path):
 
 
 SLOW_MOCK = Path(__file__).resolve().parent / "slow_identity_mock.py"
-IDENTITY_DELAY = 2.0
+IDENTITY_DELAY = 3.0
 
 
 @contextmanager
@@ -559,7 +559,11 @@ def test_a_client_disconnect_stops_a_write_that_has_not_been_sent():
         try:
             time.sleep(0.7)  # the identity check is now pending at the mock
             proc.stdin.close()  # the MCP client goes away
+            closed = time.monotonic()
             returncode = proc.wait(timeout=TIMEOUT)
+            # The pending call is cancelled, not waited for: the identity check
+            # would only be answered IDENTITY_DELAY - 0.7 s after the close.
+            assert time.monotonic() - closed < 1.5
             stdout.rest()
             errors = "".join(stderr.rest())
         finally:
