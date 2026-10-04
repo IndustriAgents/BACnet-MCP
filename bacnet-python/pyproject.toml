@@ -1,6 +1,6 @@
 [project]
 name = "bacnet-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Model Context Protocol server for BACnet/IP building automation."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -8,22 +8,32 @@ license = { text = "MIT" }
 authors = [{ name = "IndustriAgents" }]
 dependencies = [
     "anyio>=4.0.0",
-    "mcp[cli]>=1.6.0",
+    "bacpypes3>=0.0.110",
+    # FastMCP was renamed in mcp 2.x; this server is built and tested on 1.x.
+    "mcp[cli]>=1.22.0,<2",
     "pydantic>=2.6.0",
     "python-dotenv>=1.1.0",
-    "BAC0>=23.9.1",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.2.0",
-    "pytest-asyncio>=0.23.0",
-    "ruff>=0.6.0",
 ]
 
 [project.scripts]
 bacnet-mcp = "bacnet_mcp.cli:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+    "ruff>=0.14.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

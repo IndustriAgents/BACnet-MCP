@@ -37,23 +37,16 @@ jobs:
         run: uv run --locked python -m compileall -q src
 
       # Builds the FastMCP server and lists its tools in-process. This does not
-      # run the lifespan, so BAC0 is never started and no UDP port is bound.
-      # (`bacnet-mcp` itself has no --help: it starts the stdio server at once.)
-      - name: Import BAC0 and the package, and list registered tools
+      # run the lifespan, so the BACnet/IP stack is never started and no UDP
+      # port is bound. (`bacnet-mcp` itself has no --help: it starts the stdio
+      # server at once.)
+      - name: Import the package and list registered tools
         run: |
           uv run --locked python - <<'EOF'
           import asyncio
 
-          # bacnet_client wraps `import BAC0` in `except Exception: BAC0 = None`,
-          # so a broken BACnet stack would only surface at server startup.
-          # Import it directly so CI fails here, with the real traceback.
-          import BAC0  # noqa: F401
-
-          from bacnet_mcp import bacnet_client
           from bacnet_mcp.cli import main  # noqa: F401  (console entry point imports)
           from bacnet_mcp.server import BACnetMCPServer
-
-          assert bacnet_client.BAC0 is not None, "bacnet_mcp could not import BAC0"
 
           tools = asyncio.run(BACnetMCPServer()._server.list_tools())
           names = sorted(t.name for t in tools)
