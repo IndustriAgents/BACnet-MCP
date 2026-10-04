@@ -52,11 +52,10 @@ behaves like a real controller when a request is wrong:
 
 ## Talking to it
 
-Through the MCP server, from the repository root (see the
-[top-level README](../README.md#quick-start)): with writes enabled, the
-server's `read_property` / `write_property` tools take
-`address="127.0.0.1:47809"`, and `discover_devices` sends a directed Who-Is to
-that address.
+Through the MCP server (see the [Quick start](../README.md#quick-start)):
+call `discover_devices` with `"address": "127.0.0.1:47809"` (a directed
+Who-Is), then `read_property` with `"device_id": 12345`. `write_property`
+also needs the server started with `BACNET_WRITES_ENABLED=true`.
 
 Or with bacpypes3's own console, from this directory (the console binds UDP
 47808 on 127.0.0.1):
