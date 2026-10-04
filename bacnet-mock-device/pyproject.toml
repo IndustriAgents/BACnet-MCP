@@ -1,9 +1,11 @@
 [project]
 name = "bacnet-mock-device"
 version = "0.1.0"
-description = "Mock BACnet/IP device for MCP testing."
+description = "Mock BACnet device (newline-delimited JSON over TCP) for MCP testing."
 readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "IndustriAgents" }]
 dependencies = [
     "anyio>=4.0.0",
     "rich>=13.7.0",

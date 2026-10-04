@@ -5,7 +5,7 @@ description = "Model Context Protocol server for BACnet/IP building automation."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "IndustriConnect" }]
+authors = [{ name = "IndustriAgents" }]
 dependencies = [
     "anyio>=4.0.0",
     "mcp[cli]>=1.6.0",
