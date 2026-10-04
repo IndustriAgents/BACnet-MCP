@@ -642,3 +642,59 @@ def test_calls_sent_just_before_eof_are_answered_but_writes_are_not_sent():
         assert (meta["outcome"], meta["request_sent"]) == ("not_sent", False)
     assert writes == []
     assert elapsed < IDENTITY_DELAY + 1.0  # the write was not waited for
+
+
+SLOW_TOOL_SERVER = """
+import anyio
+
+import bacnet_mcp.server as server_module
+from bacnet_mcp.server import BACnetMCPServer
+from bacnet_mcp.tools import ToolConfig
+
+server_module.DRAIN_LIMIT_S = 0.3  # give up on in-flight calls quickly
+
+
+class IdleClient:
+    class config:
+        writes_enabled = False
+
+    async def open(self):
+        pass
+
+    async def close(self):
+        pass
+
+    def client_disconnected(self):
+        pass
+
+
+server = BACnetMCPServer(client=IdleClient(), tool_config=ToolConfig())
+
+
+@server.mcp.tool()
+async def slow() -> dict:
+    \"\"\"Outlive the drain at end of input.\"\"\"
+    await anyio.sleep(1.0)
+    return {"success": True, "data": None, "error": None, "meta": {}}
+
+
+server.run()
+"""
+
+
+def test_a_reply_that_can_no_longer_be_delivered_is_a_clean_exit(tmp_path):
+    """A call still running after the drain limit cannot answer: exit 0, no traceback."""
+    requests = [*INITIALIZE, tool_call(2, "slow", {})]
+    result = subprocess.run(
+        [sys.executable, "-c", SLOW_TOOL_SERVER],
+        input="".join(json.dumps(r) + "\n" for r in requests),
+        capture_output=True,
+        text=True,
+        env=isolated_env(),
+        cwd=tmp_path,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr
+    ids = [json.loads(line).get("id") for line in result.stdout.splitlines()]
+    assert 2 not in ids
