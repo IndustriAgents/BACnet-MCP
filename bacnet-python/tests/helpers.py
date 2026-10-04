@@ -58,7 +58,8 @@ def client_config(**overrides) -> BACnetConfig:
 
 @asynccontextmanager
 async def running_mock(**config) -> AsyncIterator[BACnetMockDevice]:
-    mock = BACnetMockDevice(MockConfig(port=free_udp_port(), **config))
+    config.setdefault("port", free_udp_port())
+    mock = BACnetMockDevice(MockConfig(**config))
     await mock.start(drift=False)
     try:
         yield mock
@@ -86,3 +87,66 @@ def mock_object(mock: BACnetMockDevice, object_type: str, instance: int):
         if str(obj.objectIdentifier[0]) == object_type and obj.objectIdentifier[1] == instance:
             return obj
     raise KeyError(f"{object_type},{instance}")
+
+
+def lose_write_acks(mock: BACnetMockDevice) -> list[int]:
+    """The mock applies every WriteProperty, but its reply never leaves.
+
+    Returns the invoke IDs of the WritePropertys the mock processed, so a
+    test can check that each write reached the device exactly once. Replies
+    to other requests (e.g. the identity check before a write) still go out.
+    """
+    assert mock.app is not None
+    seen: list[int] = []
+    state = {"dropping": False}
+    for link_layer in mock.app.link_layers.values():
+        transport = link_layer.server.local_transport
+        real_sendto = transport.sendto
+
+        def sendto(data, addr=None, _real=real_sendto):
+            if not state["dropping"]:
+                _real(data, addr)
+
+        transport.sendto = sendto
+    original = mock.app.do_WritePropertyRequest
+
+    async def apply_and_lose_ack(apdu):
+        seen.append(apdu.apduInvokeID)
+        state["dropping"] = True
+        try:
+            await original(apdu)
+        finally:
+            state["dropping"] = False
+
+    mock.app.do_WritePropertyRequest = apply_and_lose_ack
+    return seen
+
+
+GARBAGE = {
+    "complex-ack": lambda invoke_id: bytes([0x30, invoke_id, 0x0F, 0xFF, 0xFF]),
+    "error": lambda invoke_id: bytes([0x50, invoke_id, 0x0F, 0xFF]),
+    "simple-ack-truncated": lambda invoke_id: bytes([0x20, invoke_id]),
+}
+
+
+def answer_with_garbage(mock: BACnetMockDevice, handler_name: str, kind: str) -> list[int]:
+    """Make the mock answer ``handler_name`` requests with an undecodable reply.
+
+    bacpypes3 drops such a reply after closing the transaction, so without a
+    deadline the request would wait forever. WriteProperty is applied first.
+    """
+    assert mock.app is not None
+    server = next(iter(mock.app.link_layers.values())).server
+    seen: list[int] = []
+
+    async def garbled(apdu):
+        seen.append(apdu.apduInvokeID)
+        if handler_name == "do_WritePropertyRequest":
+            obj = mock.app.get_object_id(apdu.objectIdentifier)
+            obj.presentValue = 77.0  # applied, but the answer is garbage
+        payload = bytes([0x01, 0x00]) + GARBAGE[kind](apdu.apduInvokeID)
+        bvll = bytes([0x81, 0x0A]) + (4 + len(payload)).to_bytes(2, "big") + payload
+        server.local_transport.sendto(bvll, apdu.pduSource.addrTuple)
+
+    setattr(mock.app, handler_name, garbled)
+    return seen

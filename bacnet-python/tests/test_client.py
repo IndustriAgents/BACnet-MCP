@@ -14,14 +14,22 @@ import time
 from functools import partial
 
 import pytest
-from bacpypes3.apdu import ErrorRejectAbortNack, ReadPropertyACK
+from bacpypes3.apdu import (
+    AbortPDU,
+    ErrorRejectAbortNack,
+    ReadPropertyACK,
+    WritePropertyRequest,
+)
 from bacpypes3.app import Application
 from bacpypes3.local.device import DeviceObject
 from bacpypes3.local.networkport import NetworkPortObject
 from bacpypes3.primitivedata import Real
 from helpers import (
+    GARBAGE,
     MOCK_DEVICE_ID,
+    answer_with_garbage,
     free_udp_port,
+    lose_write_acks,
     mock_address,
     mock_object,
     running_client,
@@ -524,7 +532,7 @@ def drop_replies(mock) -> None:
 def test_a_lost_ack_never_causes_a_second_write():
     """The device applies the write, its SimpleAck is lost: it must see ONE write.
 
-    bacpypes3 retransmits a confirmed request with no answer (apdu_retries
+    bacpypes3 retransmits a confirmed request with no answer (numberOfApduRetries
     times, same invoke ID) and the device applies every copy.
     """
 
@@ -532,8 +540,7 @@ def test_a_lost_ack_never_causes_a_second_write():
         async with running_mock() as mock, running_client(apdu_retries=3) as client:
             addr = mock_address(mock)
             await client.read_property(MOCK_DEVICE_ID, "analog-input", 1, address=addr)
-            writes = count_requests(mock, "do_WritePropertyRequest")
-            drop_replies(mock)
+            writes = lose_write_acks(mock)
             with pytest.raises(WriteError) as caught:
                 await client.write_property(
                     MOCK_DEVICE_ID, "analog-output", 1, "present-value", 30.0, 8
@@ -546,6 +553,71 @@ def test_a_lost_ack_never_causes_a_second_write():
     assert error.outcome == "unknown"
     assert error.request_sent is True
     assert "the write may have been applied; read it back before retrying" in str(error)
+
+
+def test_concurrent_writes_with_lost_acks_each_reach_the_device_once():
+    async def scenario():
+        async with running_mock() as mock, running_client(apdu_retries=3) as client:
+            addr = mock_address(mock)
+            await client.read_property(MOCK_DEVICE_ID, "analog-input", 1, address=addr)
+            writes = lose_write_acks(mock)
+            results = await asyncio.gather(
+                *(
+                    client.write_property(
+                        MOCK_DEVICE_ID, "analog-output", 1, "present-value", 10.0 + n, n
+                    )
+                    for n in (8, 9, 10)
+                ),
+                *(client.read_property(MOCK_DEVICE_ID, "analog-input", n) for n in (1, 2)),
+                return_exceptions=True,
+            )
+            return writes, results
+
+    writes, results = run(scenario())
+    assert len(writes) == 3 and len(set(writes)) == 3  # one copy of each write
+    for result in results[:3]:
+        assert isinstance(result, WriteError)
+        assert (result.outcome, result.request_sent) == ("unknown", True)
+    assert all(isinstance(r, tuple) for r in results[3:])  # the reads succeeded
+
+
+@pytest.mark.parametrize("kind", sorted(GARBAGE))
+def test_a_garbled_reply_to_a_write_ends_as_unknown_not_a_hang(kind):
+    async def scenario():
+        async with running_mock() as mock, running_client(apdu_timeout_ms=300) as client:
+            addr = mock_address(mock)
+            await client.read_property(MOCK_DEVICE_ID, "analog-input", 1, address=addr)
+            writes = answer_with_garbage(mock, "do_WritePropertyRequest", kind)
+            start = time.perf_counter()
+            with pytest.raises(WriteError) as caught:
+                await asyncio.wait_for(
+                    client.write_property(
+                        MOCK_DEVICE_ID, "analog-output", 1, "present-value", 77.0, 8
+                    ),
+                    30,
+                )
+            return caught.value, time.perf_counter() - start, len(writes)
+
+    error, elapsed, count = run(scenario())
+    assert (error.outcome, error.request_sent) == ("unknown", True)
+    assert "may have been applied" in str(error)
+    assert count == 1
+    assert elapsed < 10
+
+
+@pytest.mark.parametrize("kind", sorted(GARBAGE))
+def test_a_garbled_reply_to_a_read_is_a_clean_error_not_a_hang(kind):
+    async def scenario():
+        async with running_mock() as mock, running_client(apdu_timeout_ms=300) as client:
+            addr = mock_address(mock)
+            await client.read_property(MOCK_DEVICE_ID, "analog-input", 1, address=addr)
+            answer_with_garbage(mock, "do_ReadPropertyRequest", kind)
+            start = time.perf_counter()
+            with pytest.raises(BACnetClientError, match="no usable reply|no-response"):
+                await asyncio.wait_for(client.read_property(MOCK_DEVICE_ID, "analog-input", 2), 30)
+            return time.perf_counter() - start
+
+    assert run(scenario()) < 10
 
 
 def test_reads_are_still_retried():
@@ -617,9 +689,14 @@ def test_an_unexpected_reply_to_a_write_is_not_success():
         async with running_mock() as mock, running_client() as client:
             addr = mock_address(mock)
             await client.read_property(MOCK_DEVICE_ID, "analog-input", 1, address=addr)
+            real_request = client._app.request
 
-            async def odd_reply(request):
-                return ReadPropertyACK()
+            def odd_reply(request):
+                if isinstance(request, WritePropertyRequest):
+                    future = asyncio.get_running_loop().create_future()
+                    future.set_result(ReadPropertyACK())
+                    return future
+                return real_request(request)
 
             client._app.request = odd_reply
             with pytest.raises(WriteError) as caught:
@@ -631,3 +708,159 @@ def test_an_unexpected_reply_to_a_write_is_not_success():
     error = run(scenario())
     assert (error.outcome, error.request_sent) == ("unknown", True)
     assert "unexpected reply" in str(error)
+
+
+def answer_writes_with_abort(mock, reason: str) -> None:
+    """The mock applies the write, then its application aborts the transaction."""
+
+    async def apply_then_abort(apdu):
+        mock.app.get_object_id(apdu.objectIdentifier).presentValue = 99.0
+        await mock.app.response(AbortPDU(True, reason=reason, context=apdu))
+
+    mock.app.do_WritePropertyRequest = apply_then_abort
+
+
+@pytest.mark.parametrize(
+    ("reason", "outcome"),
+    [
+        # may come after the device acted: the write may have been applied
+        ("application-exceeded-reply-time", "unknown"),
+        ("other", "unknown"),
+        ("out-of-resources", "unknown"),
+        ("tsm-timeout", "unknown"),
+        ("preempted-by-higher-priority-task", "unknown"),
+        # refused before execution
+        ("segmentation-not-supported", "rejected"),
+        ("buffer-overflow", "rejected"),
+        ("invalid-apdu-in-this-state", "rejected"),
+    ],
+)
+def test_an_abort_is_rejected_only_when_it_precedes_execution(reason, outcome):
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            addr = mock_address(mock)
+            await client.read_property(MOCK_DEVICE_ID, "analog-input", 1, address=addr)
+            answer_writes_with_abort(mock, reason)
+            with pytest.raises(WriteError) as caught:
+                await client.write_property(
+                    MOCK_DEVICE_ID, "analog-output", 1, "present-value", 99.0, 8
+                )
+            return caught.value
+
+    error = run(scenario())
+    assert (error.outcome, error.request_sent) == (outcome, True)
+    assert ("may have been applied" in str(error)) == (outcome == "unknown")
+
+
+def test_aborts_raised_on_our_side_are_never_rejected():
+    from bacnet_mcp.bacnet_client import write_failure_outcome
+
+    for reason in ("segmentation-not-supported", "no-response", "other"):
+        assert write_failure_outcome(AbortPDU(False, reason=reason)) == "unknown"
+    assert write_failure_outcome(AbortPDU(True, reason="segmentation-not-supported")) == (
+        "rejected"
+    )
+
+
+@pytest.mark.parametrize(
+    ("object_type", "prop", "value", "message"),
+    [
+        ("analog-output", "present-value", 1e40, "too large for a 32-bit REAL"),
+        ("analog-output", "present-value", "NaN", "NaN and infinity"),
+        ("analog-output", "present-value", "inf", "NaN and infinity"),
+        ("analog-output", "present-value", "-inf", "NaN and infinity"),
+        ("analog-output", "present-value", "abc", "give a number"),
+        ("binary-value", "present-value", 2, "use one of"),
+        ("binary-value", "present-value", "on", "use one of"),
+        ("analog-output", "units", True, "give one of the enumeration's names"),
+        ("analog-output", "units", 99999, "use one of"),
+        ("analog-output", "out-of-service", 1, "give true or false"),
+        ("analog-output", "description", "x" * 3000, "segmented writes are not supported"),
+    ],
+)
+def test_values_that_cannot_be_sent_as_given_are_not_sent(object_type, prop, value, message):
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            writes = count_requests(mock, "do_WritePropertyRequest")
+            with pytest.raises(WriteError) as caught:
+                await client.write_property(
+                    MOCK_DEVICE_ID, object_type, 1, prop, value, 8, address=mock_address(mock)
+                )
+            return caught.value, writes
+
+    error, writes = run(scenario())
+    assert (error.outcome, error.request_sent) == ("not_sent", False)
+    assert message in str(error)
+    assert writes == []
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [(True, "active"), (False, "inactive"), (0, "inactive")]
+)
+def test_binary_values_take_booleans_names_and_defined_numbers(value, expected):
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            await client.write_property(
+                MOCK_DEVICE_ID,
+                "binary-value",
+                1,
+                "present-value",
+                value,
+                8,
+                address=mock_address(mock),
+            )
+            return str(mock_object(mock, "binary-value", 1).presentValue)
+
+    assert run(scenario()) == expected
+
+
+def test_a_write_rechecks_the_identity_behind_a_cached_address():
+    """The device at a known address was replaced: the write must not go to it."""
+
+    async def scenario():
+        async with running_client() as client:
+            port = free_udp_port()
+            async with running_mock(port=port) as first:
+                await client.read_property(
+                    MOCK_DEVICE_ID, "analog-input", 1, address=mock_address(first)
+                )
+            async with running_mock(port=port, device_id=777) as second:
+                writes = count_requests(second, "do_WritePropertyRequest")
+                with pytest.raises(WriteError) as caught:
+                    await client.write_property(
+                        MOCK_DEVICE_ID, "analog-output", 1, "present-value", 1.0, 8
+                    )
+                return caught.value, writes
+
+    error, writes = run(scenario())
+    assert (error.outcome, error.request_sent) == ("not_sent", False)
+    assert "is device 777, not 12345" in str(error)
+    assert writes == []
+
+
+def test_a_failure_while_building_the_request_is_not_sent(monkeypatch):
+    """Anything that fails before the request leaves is not_sent, never unknown."""
+    from bacnet_mcp import bacnet_client
+
+    # Skip the value checks so the encoder itself fails (REAL overflow).
+    monkeypatch.setattr(bacnet_client, "coerce_write_value", lambda value, t, p: Real(1e40))
+
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            writes = count_requests(mock, "do_WritePropertyRequest")
+            with pytest.raises(WriteError) as caught:
+                await client.write_property(
+                    MOCK_DEVICE_ID,
+                    "analog-output",
+                    1,
+                    "present-value",
+                    1.0,
+                    8,
+                    address=mock_address(mock),
+                )
+            return caught.value, writes
+
+    error, writes = run(scenario())
+    assert (error.outcome, error.request_sent) == ("not_sent", False)
+    assert "could not build the request" in str(error)
+    assert writes == []

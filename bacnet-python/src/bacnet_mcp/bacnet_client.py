@@ -15,7 +15,7 @@ import os
 import re
 import socket
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,7 +30,6 @@ from bacpypes3.apdu import (
     WritePropertyRequest,
 )
 from bacpypes3.app import Application
-from bacpypes3.appservice import ApplicationServiceAccessPoint
 from bacpypes3.constructeddata import Any as AnyValue
 from bacpypes3.constructeddata import AnyAtomic, Array, Choice, Sequence
 from bacpypes3.errors import PropertyError
@@ -41,10 +40,12 @@ from bacpypes3.pdu import Address, IPv4Address
 from bacpypes3.primitivedata import (
     Atomic,
     Boolean,
+    Double,
     Enumerated,
     Integer,
     Null,
     ObjectIdentifier,
+    Real,
     Unsigned,
 )
 
@@ -86,6 +87,46 @@ class BACnetClientError(RuntimeError):
 # nobody knows (the request may have been applied), or it never went out.
 WRITTEN, REJECTED, UNKNOWN, NOT_SENT = "written", "rejected", "unknown", "not_sent"
 MAY_HAVE_BEEN_APPLIED = "the write may have been applied; read it back before retrying"
+
+
+class NoAnswer(BACnetClientError):
+    """A read got no usable answer (timeouts, garbled replies), after retries."""
+
+
+class DeviceRefused(BACnetClientError):
+    """The device answered a read with an Error, Reject or Abort."""
+
+
+# Aborts a device sends before executing a request (ASHRAE 135 clause 5.4 and
+# the abort reasons): the request was not applied. Any other abort, e.g.
+# application-exceeded-reply-time, may come after the device acted.
+PRE_EXECUTION_ABORTS = frozenset(
+    {
+        "segmentation-not-supported",
+        "buffer-overflow",
+        "apdu-too-long",
+        "window-size-out-of-range",
+        "security-error",
+        "insufficient-security",
+        "invalid-apdu-in-this-state",
+    }
+)
+
+REQUEST_SLACK_S = 2.0  # on top of the APDU timeout, for one request's deadline
+MAX_REAL = 3.4028234663852886e38  # largest finite IEEE 754 single
+
+
+def write_failure_outcome(exc: BaseException) -> str:
+    """rejected only when the device refused before executing; else unknown."""
+    if isinstance(exc, ErrorPDU | RejectPDU):
+        return REJECTED
+    if (
+        isinstance(exc, AbortPDU)
+        and getattr(exc, "apduSrv", False)
+        and str(exc.apduAbortRejectReason) in PRE_EXECUTION_ABORTS
+    ):
+        return REJECTED
+    return UNKNOWN
 
 
 class WriteError(BACnetClientError):
@@ -221,68 +262,6 @@ class ServerNetworkPortObject(_ReadOnly, NetworkPortObject):
     pass
 
 
-# Confirmed services that change a device. bacpypes3 retransmits a confirmed
-# request that gets no answer (numberOfApduRetries times, with the same
-# invoke ID), and a device that applied the first copy but whose ack was lost
-# applies every copy. These are sent exactly once.
-DEVICE_CHANGING_SERVICES = frozenset(
-    {
-        7,  # atomicWriteFile
-        8,  # addListElement
-        9,  # removeListElement
-        10,  # createObject
-        11,  # deleteObject
-        15,  # writeProperty
-        16,  # writePropertyMultiple
-        17,  # deviceCommunicationControl
-        20,  # reinitializeDevice
-    }
-)
-
-
-class _Transactions(list):
-    """bacpypes3's client transaction list, which sees each new ClientSSM.
-
-    ``ApplicationServiceAccessPoint.sap_indication`` creates the ClientSSM
-    (copying the device object's retry count) and appends it here with no
-    ``await`` in between, so the flag set just before is always this
-    request's.
-    """
-
-    def __init__(self, sap: _SendOnceASAP, items=()) -> None:
-        super().__init__(items)
-        self.sap = sap
-
-    def append(self, transaction) -> None:
-        if self.sap.send_next_once:
-            transaction.numberOfApduRetries = 0
-            self.sap.send_next_once = False
-        super().append(transaction)
-
-
-class _SendOnceASAP(ApplicationServiceAccessPoint):
-    """Sends device-changing confirmed requests without retransmissions."""
-
-    send_next_once = False
-
-    async def sap_indication(self, apdu) -> None:
-        self.send_next_once = (
-            getattr(apdu, "apduType", None) == 0
-            and getattr(apdu, "apduService", None) in DEVICE_CHANGING_SERVICES
-        )
-        try:
-            await super().sap_indication(apdu)
-        finally:
-            self.send_next_once = False
-
-
-def send_writes_once(app: Application) -> None:
-    """Make ``app`` send device-changing requests at most once."""
-    asap = app.asap
-    asap.__class__ = _SendOnceASAP
-    asap.clientTransactions = _Transactions(asap, asap.clientTransactions)
-
-
 class ServerApplication(Application):
     """The server's bacpypes3 application: WriteProperty is always refused,
     and ReadProperty understands the wildcard device instance.
@@ -357,6 +336,61 @@ def to_jsonable(value: Any) -> Any:
     return str(value)
 
 
+def coerce_write_value(value: Any, property_type: type, prop: Any) -> Any:
+    """Turn a JSON value into the property's BACnet type, refusing guesses.
+
+    - booleans only for Boolean and BinaryPV properties (true = active);
+    - enumerations take a defined name or a defined number;
+    - REALs must be finite and fit in 32 bits;
+    - integral floats are accepted for integer properties (JSON 30.0).
+    """
+
+    def refuse(reason: str) -> BACnetClientError:
+        return BACnetClientError(
+            f"value {value!r} is not valid for {prop} ({property_type.__name__}): {reason}"
+        )
+
+    if issubclass(property_type, Enumerated):
+        if isinstance(value, bool):
+            if property_type.__name__ != "BinaryPV":
+                raise refuse("give one of the enumeration's names")
+            return property_type("active" if value else "inactive")
+        names = property_type._enum_map
+        numbers = property_type._attr_map
+        if isinstance(value, str) and value in names:
+            return property_type(value)
+        if isinstance(value, int) and value in numbers:
+            return property_type(value)
+        choices = ", ".join(sorted({v for v in numbers.values()})[:12])
+        raise refuse(f"use one of: {choices}")
+    if isinstance(value, bool) and not issubclass(property_type, Boolean):
+        raise refuse("give a number or string")
+    if issubclass(property_type, Boolean) and not isinstance(value, bool):
+        raise refuse("give true or false")
+    if issubclass(property_type, Real):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise refuse("give a number") from None
+        if not math.isfinite(number):
+            raise refuse("NaN and infinity cannot be written")
+        if not issubclass(property_type, Double) and abs(number) > MAX_REAL:
+            raise refuse("too large for a 32-bit REAL")
+        return property_type(number)
+    if (
+        isinstance(value, float)
+        and value.is_integer()
+        and issubclass(property_type, Unsigned | Integer)
+    ):
+        value = int(value)  # JSON 30.0 for an integer property
+    if isinstance(value, property_type):
+        return value
+    try:
+        return property_type(value)
+    except Exception as exc:  # noqa: BLE001 - user-supplied value
+        raise refuse(str(exc) or type(exc).__name__) from None
+
+
 def finite_or_name(value: Any) -> Any:
     """JSON has no NaN or Infinity (common on faulted sensors): name them."""
     if isinstance(value, float) and not math.isfinite(value):
@@ -410,7 +444,10 @@ class BACnetClient:
             vendorName="IndustriAgents BACnet MCP server",
             modelName="bacnet-mcp",
             apduTimeout=self.config.apdu_timeout_ms,
-            numberOfApduRetries=self.config.apdu_retries,
+            # bacpypes3 never retransmits anything: it would resend a
+            # WriteProperty whose ack was lost, and the device would apply it
+            # again. Reads are retried by this client instead (_read_request).
+            numberOfApduRetries=0,
         )
         network_port = ServerNetworkPortObject(
             self.config.bacnet_address,
@@ -418,7 +455,6 @@ class BACnetClient:
             objectName="NetworkPort-1",
         )
         app = ServerApplication.from_object_list([device, network_port])
-        send_writes_once(app)
         pending = self._transport_tasks(app)
         if pending:
             _, not_done = await asyncio.wait(pending, timeout=5)
@@ -568,21 +604,24 @@ class BACnetClient:
                 "(e.g. 192.168.1.10/24)."
             )
 
-    async def _resolve(self, device_id: int, address: str | None) -> Address:
-        """Find (and confirm) the address of a device instance."""
+    async def _resolve(self, device_id: int, address: str | None) -> tuple[Address, bool]:
+        """Find the address of a device instance.
+
+        Returns the address and whether its identity was confirmed just now.
+        """
         app = self._require_app()
         if address is not None:
             addr = self._target(address)
             cached = self._addresses.get(device_id)
             if cached is not None and cached == addr:
-                return addr
+                return addr, False
             await self._confirm_identity(app, addr, device_id, address)
             self._addresses[device_id] = addr
-            return addr
+            return addr, True
 
         cached = self._addresses.get(device_id)
         if cached is not None:
-            return cached
+            return cached, False
         self._require_broadcast()
         mark = time.monotonic()
         i_ams = await app.who_is(device_id, device_id, timeout=self._resolve_timeout)
@@ -592,7 +631,7 @@ class BACnetClient:
                 f"{self._send_failure(mark)}; pass its address or run discover_devices"
             )
         self._addresses[device_id] = i_ams[0].pduSource
-        return i_ams[0].pduSource
+        return i_ams[0].pduSource, False
 
     async def _confirm_identity(
         self, app: Application, addr: Address, device_id: int, address: str
@@ -605,18 +644,20 @@ class BACnetClient:
         directed Who-Is for devices that do not support the wildcard.
         """
         mark = time.monotonic()
-        request = ReadPropertyRequest(
-            objectIdentifier=ObjectIdentifier(WILDCARD_DEVICE),
-            propertyIdentifier="objectIdentifier",
-            destination=addr,
-        )
+
+        def request() -> ReadPropertyRequest:
+            return ReadPropertyRequest(
+                objectIdentifier=ObjectIdentifier(WILDCARD_DEVICE),
+                propertyIdentifier="objectIdentifier",
+                destination=addr,
+            )
+
         try:
-            response = await app.request(request)
-        except ErrorRejectAbortNack as exc:
-            if isinstance(exc, AbortPDU) and str(exc.apduAbortRejectReason) == "no-response":
-                raise BACnetClientError(
-                    f"no BACnet device answered at {address}{self._send_failure(mark)}"
-                ) from None
+            response = await self._read_request(app, request, device_id)
+        except NoAnswer as exc:
+            self._addresses.pop(device_id, None)
+            raise BACnetClientError(f"no BACnet device answered at {address}: {exc}") from None
+        except DeviceRefused:
             response = None  # wildcard not supported: ask with Who-Is instead
         if isinstance(response, ReadPropertyACK):
             try:
@@ -625,6 +666,7 @@ class BACnetClient:
                 found = None
             if found is not None:
                 if found[1] != device_id:
+                    self._addresses.pop(device_id, None)
                     raise BACnetClientError(
                         f"the device at {address} is device {found[1]}, not {device_id}"
                     )
@@ -634,6 +676,7 @@ class BACnetClient:
                 return
         i_ams = await app.who_is(device_id, device_id, addr, timeout=self._resolve_timeout)
         if not i_ams:
+            self._addresses.pop(device_id, None)
             raise BACnetClientError(
                 f"no device {device_id} answered a Who-Is at {address}"
                 f"{self._send_failure(mark)}; check the device instance and address"
@@ -643,16 +686,39 @@ class BACnetClient:
     def _resolve_timeout(self) -> float:
         return max(1.0, self.config.apdu_timeout_ms / 1000.0)
 
-    async def _request(self, app: Application, request: Any, device_id: int) -> Any:
+    @property
+    def request_deadline(self) -> float:
+        """Seconds one confirmed request may take before it is given up."""
+        return self.config.apdu_timeout_ms / 1000.0 + REQUEST_SLACK_S
+
+    async def _read_request(
+        self, app: Application, make_request: Callable[[], Any], device_id: int
+    ) -> Any:
+        """Send a confirmed *read*; retry it (as a new request) when no answer comes.
+
+        bacpypes3 itself never retransmits (numberOfApduRetries is 0), so reads
+        get their BACNET_APDU_RETRIES here. Every attempt has a deadline: a
+        garbled reply that bacpypes3 drops would otherwise wait forever.
+        """
+        attempts = self.config.apdu_retries + 1
         mark = time.monotonic()
-        try:
-            return await app.request(request)
-        except ErrorRejectAbortNack as exc:
-            message = describe_bacnet_error(exc)
-            if isinstance(exc, AbortPDU) and str(exc.apduAbortRejectReason) == "no-response":
-                self._addresses.pop(device_id, None)
-                message += self._send_failure(mark)
-            raise BACnetClientError(message) from None
+        last = ""
+        for _ in range(attempts):
+            try:
+                return await asyncio.wait_for(app.request(make_request()), self.request_deadline)
+            except TimeoutError:
+                last = f"no usable reply within {self.request_deadline:g} s"
+            except ErrorRejectAbortNack as exc:
+                no_response = (
+                    isinstance(exc, AbortPDU)
+                    and not getattr(exc, "apduSrv", False)
+                    and str(exc.apduAbortRejectReason) == "no-response"
+                )
+                if not no_response:
+                    raise DeviceRefused(describe_bacnet_error(exc)) from None
+                last = describe_bacnet_error(exc)
+        self._addresses.pop(device_id, None)
+        raise NoAnswer(f"{last} ({attempts} attempt(s)){self._send_failure(mark)}")
 
     async def _references(
         self,
@@ -772,7 +838,7 @@ class BACnetClient:
         """ReadProperty; returns the decoded value as JSON-ready data."""
         self._require_app()
         start = time.perf_counter()
-        addr = await self._resolve(device_id, address)
+        addr, _ = await self._resolve(device_id, address)
         value = await self._read_at(
             addr, device_id, object_type, object_instance, property_id, array_index
         )
@@ -796,12 +862,16 @@ class BACnetClient:
         vendor_info, objid, prop, array_index = await self._references(
             app, addr, object_type, object_instance, property_id, array_index
         )
-        request = ReadPropertyRequest(
-            objectIdentifier=objid, propertyIdentifier=prop, destination=addr
-        )
-        if array_index is not None:
-            request.propertyArrayIndex = array_index
-        response = await self._request(app, request, device_id)
+
+        def request() -> ReadPropertyRequest:
+            read = ReadPropertyRequest(
+                objectIdentifier=objid, propertyIdentifier=prop, destination=addr
+            )
+            if array_index is not None:
+                read.propertyArrayIndex = array_index
+            return read
+
+        response = await self._read_request(app, request, device_id)
         if not isinstance(response, ReadPropertyACK):
             raise BACnetClientError(
                 f"unexpected response to ReadProperty: {type(response).__name__}"
@@ -828,7 +898,7 @@ class BACnetClient:
 
         Every failure is a :class:`WriteError` that says whether the request
         went out and what is known about the result. A request that got no
-        answer is never sent again: the device may have applied it.
+        (usable) answer is never sent again: the device may have applied it.
         """
         if not self.config.writes_enabled:
             raise WriteError(
@@ -839,25 +909,39 @@ class BACnetClient:
         try:
             app = self._require_app()
             start = time.perf_counter()
-            addr = await self._resolve(device_id, address)
+            addr, confirmed = await self._resolve(device_id, address)
+            if not confirmed:
+                # A cached address may now belong to another device.
+                await self._confirm_identity(app, addr, device_id, str(addr))
             request = await self._write_request(
                 app, addr, object_type, object_instance, property_id, value, priority, array_index
             )
         except WriteError:
             raise
-        except BACnetClientError as exc:
-            raise WriteError(str(exc), NOT_SENT, False) from None
+        except Exception as exc:  # noqa: BLE001 - nothing has been sent yet
+            message = (
+                str(exc)
+                if isinstance(exc, BACnetClientError)
+                else (f"could not build the request: {type(exc).__name__}: {exc}")
+            )
+            raise WriteError(message, NOT_SENT, False) from None
 
-        # From here on the request may have reached the device.
+        # From here on the request may have reached the device: it is sent
+        # exactly once (bacpypes3 has numberOfApduRetries=0) and never retried.
         mark = time.monotonic()
         try:
-            response = await app.request(request)
+            response = await asyncio.wait_for(app.request(request), self.request_deadline)
+        except TimeoutError:
+            raise WriteError(
+                f"no usable reply within {self.request_deadline:g} s: {MAY_HAVE_BEEN_APPLIED}",
+                UNKNOWN,
+                True,
+            ) from None
         except ErrorRejectAbortNack as exc:
             message = describe_bacnet_error(exc)
-            if isinstance(exc, ErrorPDU | RejectPDU) or getattr(exc, "apduSrv", False):
+            if write_failure_outcome(exc) == REJECTED:
                 raise WriteError(message, REJECTED, True) from None
-            # no-response, or an abort raised on our side after sending
-            if str(exc.apduAbortRejectReason) == "no-response":
+            if str(getattr(exc, "apduAbortRejectReason", "")) == "no-response":
                 self._addresses.pop(device_id, None)
             raise WriteError(
                 f"{message}{self._send_failure(mark)}: {MAY_HAVE_BEEN_APPLIED}", UNKNOWN, True
@@ -893,7 +977,7 @@ class BACnetClient:
         priority: int | None,
         array_index: int | None,
     ) -> WritePropertyRequest:
-        """Build (and check) a WriteProperty request; nothing is sent."""
+        """Build, check and encode a WriteProperty request; nothing is sent."""
         vendor_info, objid, prop, array_index = await self._references(
             app, addr, object_type, object_instance, property_id, array_index
         )
@@ -904,25 +988,8 @@ class BACnetClient:
                     "a null value relinquishes a priority-array slot and needs a priority"
                 )
             encoded: Any = Null(())
-        elif isinstance(value, bool) and not issubclass(property_type, Boolean | Enumerated):
-            raise BACnetClientError(
-                f"value {value!r} is not valid for {prop} ({property_type.__name__}): "
-                "give a number or string"
-            )
         else:
-            if (
-                isinstance(value, float)
-                and value.is_integer()
-                and issubclass(property_type, Unsigned | Integer)
-            ):
-                value = int(value)  # JSON 30.0 for an integer property
-            try:
-                encoded = value if isinstance(value, property_type) else property_type(value)
-            except Exception as exc:  # noqa: BLE001 - user-supplied value
-                reason = str(exc) or type(exc).__name__
-                raise BACnetClientError(
-                    f"value {value!r} is not valid for {prop} ({property_type.__name__}): {reason}"
-                ) from exc
+            encoded = coerce_write_value(value, property_type, prop)
         request = WritePropertyRequest(
             objectIdentifier=objid,
             propertyIdentifier=prop,
@@ -933,6 +1000,20 @@ class BACnetClient:
             request.propertyArrayIndex = array_index
         if priority is not None:
             request.priority = priority
+        # Encode now, so a value that cannot be encoded fails before sending,
+        # and refuse a request that would need segmenting: a segmented write
+        # that fails part-way leaves the device in an unknown state.
+        size = len(request.encode().pduData) + 4  # + confirmed-request header
+        info = await app.device_info_cache.get_device_info(addr)
+        limit = min(
+            int(getattr(app.device_object, "maxApduLengthAccepted", 1024) or 1024),
+            int(getattr(info, "max_apdu_length_accepted", None) or 1024),
+        )
+        if size > limit:
+            raise BACnetClientError(
+                f"the request is {size} bytes, more than the {limit} the device accepts in "
+                "one message; segmented writes are not supported"
+            )
         return request
 
     def connection_status(self) -> dict[str, Any]:
