@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from bacpypes3.apdu import ErrorRejectAbortNack
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
@@ -228,6 +229,8 @@ async def guarded(
         return await action()
     except (ArgumentError, BACnetClientError) as exc:
         return fail(str(exc), {"tool": tool, **(meta or {})})
+    except ErrorRejectAbortNack as exc:  # a BaseException in bacpypes3; never let it escape
+        return fail(f"BACnet failure: {exc}", {"tool": tool, **(meta or {})})
     except Exception as exc:  # noqa: BLE001 - the model gets an envelope, never a crash
         log.exception("%s failed", tool)
         return fail(f"{type(exc).__name__}: {exc}", {"tool": tool, **(meta or {})})
@@ -236,7 +239,7 @@ async def guarded(
 def register_tools(server: FastMCP, resources: ToolResources) -> None:
     client = resources.client
 
-    def tool(annotations: ToolAnnotations) -> Callable:
+    def register(annotations: ToolAnnotations) -> Callable:
         """Register a tool with its docstring, dedented, as the description."""
 
         def decorator(fn: Callable) -> Callable:
@@ -298,7 +301,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         }
         return ok(data, meta)
 
-    @tool(READ_ONLY)
+    @register(READ_ONLY)
     async def discover_devices(
         timeout_ms: int = 3000,
         address: str | None = None,
@@ -346,7 +349,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
         return await guarded("discover_devices", action)
 
-    @tool(READ_ONLY)
+    @register(READ_ONLY)
     async def read_property(
         device_id: int,
         object_type: str,
@@ -386,7 +389,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
         return await guarded("read_property", action, meta)
 
-    @tool(WRITES_DEVICE)
+    @register(WRITES_DEVICE)
     async def write_property(
         device_id: int,
         object_type: str,
@@ -434,7 +437,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
         return await guarded("write_property", action, meta)
 
-    @tool(LOCAL_ONLY)
+    @register(LOCAL_ONLY)
     async def list_objects() -> Envelope:
         """List the aliases defined in the object map (OBJECT_MAP_FILE).
 
@@ -451,7 +454,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
         return await guarded("list_objects", action)
 
-    @tool(READ_ONLY)
+    @register(READ_ONLY)
     async def read_object_by_alias(alias: str) -> Envelope:
         """Read the property an object-map alias points to (see list_objects).
 
@@ -472,7 +475,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
         return await guarded("read_object_by_alias", action, {"alias": alias})
 
-    @tool(WRITES_DEVICE)
+    @register(WRITES_DEVICE)
     async def write_object_by_alias(alias: str, value: WriteValue) -> Envelope:
         """Write the property an object-map alias points to (see list_objects).
 
@@ -508,7 +511,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
         return await guarded("write_object_by_alias", action, {"alias": alias})
 
-    @tool(LOCAL_ONLY)
+    @register(LOCAL_ONLY)
     async def ping() -> Envelope:
         """Report the server's BACnet/IP settings and state; sends nothing.
 

@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 import pytest
+from bacpypes3.apdu import AbortPDU
 from helpers import MOCK_DEVICE_ID, client_config, mock_address, mock_object, running_mock
 from mcp.shared.memory import create_connected_server_and_client_session
 
@@ -255,6 +256,8 @@ def test_valid_calls_reach_the_client():
     [
         (BACnetClientError("BACnet error: object: unknown-object"), "unknown-object"),
         (RuntimeError("boom"), "RuntimeError: boom"),
+        # bacpypes3 PDUs are BaseExceptions; one must never escape a tool
+        (AbortPDU(reason="noResponse"), "BACnet failure: no-response"),
     ],
 )
 def test_client_failures_come_back_as_envelopes(error, message):
