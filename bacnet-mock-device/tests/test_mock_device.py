@@ -102,6 +102,15 @@ def test_device_identity_and_objects():
     run_with_mock(scenario)
 
 
+def test_wildcard_device_instance_reads_this_device():
+    async def scenario(mock, client, addr):
+        object_type, instance = await read(client, addr, "device,4194303", "object-identifier")
+        assert (str(object_type), instance) == ("device", 12345)
+        assert await read(client, addr, "device,4194303", "model-name") == "TestController"
+
+    run_with_mock(scenario)
+
+
 def test_initial_values():
     async def scenario(mock, client, addr):
         assert await read(client, addr, "analog-input,1") == pytest.approx(72.5)

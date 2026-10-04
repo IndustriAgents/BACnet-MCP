@@ -133,12 +133,22 @@ class MockBinaryValue(_RestrictedWrites, Commandable, LocalObject, _BinaryValueO
 
 
 class MockApplication(Application):
-    """bacpypes3 application with real-device answers to bad writes.
+    """bacpypes3 application that answers like a real controller.
 
-    bacpypes3 answers a WriteProperty to a property the object does not have
-    with ``device: operational-problem`` (it fails while decoding the value);
-    a controller answers ``property: unknown-property``.
+    - ReadProperty of ``device,4194303`` (the wildcard instance) reads this
+      device's own device object.
+    - A WriteProperty to a property the object does not have is answered with
+      ``property: unknown-property``; bacpypes3 alone answers
+      ``device: operational-problem`` (it fails while decoding the value).
     """
+
+    async def do_ReadPropertyRequest(self, apdu) -> None:  # noqa: N802 - bacpypes3 name
+        # Device instance 4194303 means "the device you are": controllers
+        # support it, but bacpypes3's own check never matches.
+        object_type, instance = apdu.objectIdentifier
+        if str(object_type) == "device" and instance == 4194303 and self.device_object:
+            apdu.objectIdentifier = self.device_object.objectIdentifier
+        await super().do_ReadPropertyRequest(apdu)
 
     async def do_WritePropertyRequest(self, apdu) -> None:  # noqa: N802 - bacpypes3 name
         obj = self.get_object_id(apdu.objectIdentifier)
