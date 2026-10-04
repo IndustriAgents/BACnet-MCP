@@ -1149,13 +1149,21 @@ class BACnetClient:
                 "the MCP client disconnected before the write was sent", NOT_SENT, False
             )
         task = asyncio.current_task()
-        if task is not None and task.cancelling():
-            raise WriteError("the call was cancelled before the write was sent", NOT_SENT, False)
         # The MCP SDK cancels a request by setting its cancel scope; a task
         # whose last await had already completed runs one more step anyway, so
         # the scope's flag is checked too (a plain bool).
         scope = request_cancel_scope.get()
-        if scope is not None and getattr(scope, "cancel_called", False):
+        request_cancelled = scope is not None and getattr(scope, "cancel_called", False)
+        if request_cancelled or (task is not None and task.cancelling()):
+            log.warning("write cancelled by the MCP client before it was sent; nothing was sent")
+            # End as a real cancellation, never with an envelope: the SDK has
+            # already answered "Request cancelled", and a second reply could
+            # crash the session. The SDK suppresses the cancellation.
+            await anyio.lowlevel.checkpoint_if_cancelled()
+            if request_cancelled:
+                raise anyio.get_cancelled_exc_class()("the MCP request was cancelled")
+            # A plain task cancellation that was swallowed on the way: report
+            # it like any refused write.
             raise WriteError("the call was cancelled before the write was sent", NOT_SENT, False)
         if loop.time() > send_by:
             raise WriteError(

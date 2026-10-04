@@ -1319,12 +1319,13 @@ def test_a_cancel_in_the_same_loop_step_as_the_preparation_never_sends(monkeypat
 
 
 def test_a_request_marked_cancelled_is_refused_even_before_anyio_delivers_it():
-    """The cancel_called flag alone stops the send.
+    """The cancel_called flag alone stops the send, and the call ends cancelled.
 
     The SDK flags the request (scope.cancel_called) before anything reaches
     the task; with a lock or worker in between, the task may not see a
     CancelledError before it would send. A scope that is flagged but never
-    delivers stands in for that moment.
+    delivers stands in for that moment. The call must end as a cancellation,
+    not with an envelope: the SDK has already answered the request.
     """
     from bacnet_mcp import bacnet_client
 
@@ -1334,22 +1335,27 @@ def test_a_request_marked_cancelled_is_refused_even_before_anyio_delivers_it():
             flagged = anyio.CancelScope()  # never entered: cancel() only sets the flag
             flagged.cancel()
             token = bacnet_client.request_cancel_scope.set(flagged)
+            outcome = None
             try:
-                with pytest.raises(WriteError) as caught:
-                    await client.write_property(
-                        MOCK_DEVICE_ID,
-                        "analog-output",
-                        1,
-                        "present-value",
-                        6.0,
-                        8,
-                        address=mock_address(mock),
-                    )
+                await client.write_property(
+                    MOCK_DEVICE_ID,
+                    "analog-output",
+                    1,
+                    "present-value",
+                    6.0,
+                    8,
+                    address=mock_address(mock),
+                )
+                outcome = "written"
+            except WriteError as exc:
+                outcome = f"envelope: {exc.outcome}"
+            except asyncio.CancelledError:
+                outcome = "cancelled"
             finally:
                 bacnet_client.request_cancel_scope.reset(token)
             await asyncio.sleep(0.3)
-            return caught.value, writes
+            return outcome, writes
 
-    error, writes = run(scenario())
-    assert (error.outcome, error.request_sent) == ("not_sent", False)
+    outcome, writes = run(scenario())
+    assert outcome == "cancelled"
     assert writes == []

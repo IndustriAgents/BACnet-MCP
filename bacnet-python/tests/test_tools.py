@@ -716,3 +716,69 @@ def test_tool_calls_see_the_mcp_requests_cancel_scope():
     assert isinstance(seen["scope"], anyio.CancelScope)
     assert seen["scope"].cancel_called is False
     assert request_cancel_scope.get() is None  # reset after the call
+
+
+def test_a_same_step_cancel_through_the_sdk_leaves_the_server_answering():
+    """RequestResponder.cancel() lands while the write is about to be sent.
+
+    The SDK replies "Request cancelled" itself, so the tool must end as a
+    cancellation and send no second reply; the session keeps working and the
+    device never receives the write.
+    """
+    from mcp.shared.exceptions import McpError
+
+    from bacnet_mcp import bacnet_client
+
+    async def main():
+        async with running_mock() as mock:
+            client = BACnetClient(client_config(writes_enabled=True))
+            server = BACnetMCPServer(client=client, tool_config=ToolConfig())
+            lowlevel = server.mcp._mcp_server
+            build = bacnet_client.BACnetClient._write_request
+
+            async def build_then_cancel(self, *args):
+                request = await build(self, *args)
+                context = lowlevel.request_context
+                responder = context.session._in_flight[context.request_id]
+                asyncio.ensure_future(responder.cancel())  # the SDK's own cancel
+                return request  # nothing awaited between here and the send
+
+            writes = []
+            original = mock.app.do_WritePropertyRequest
+
+            async def counting(apdu):
+                writes.append(apdu)
+                await original(apdu)
+
+            mock.app.do_WritePropertyRequest = counting
+            results = []
+            bacnet_client.BACnetClient._write_request = build_then_cancel
+            try:
+                async with create_connected_server_and_client_session(server.mcp) as session:
+                    for _ in range(10):
+                        try:
+                            await session.call_tool(
+                                "write_property",
+                                {
+                                    "device_id": MOCK_DEVICE_ID,
+                                    "object_type": "analog-output",
+                                    "object_instance": 1,
+                                    "property_id": "present-value",
+                                    "value": 9,
+                                    "priority": 8,
+                                    "address": mock_address(mock),
+                                },
+                            )
+                            results.append("answered")
+                        except McpError as exc:
+                            results.append(exc.error.message)
+                        ping = await call(session, "ping", {})
+                        assert ping["success"] is True
+            finally:
+                bacnet_client.BACnetClient._write_request = build
+            await asyncio.sleep(0.3)
+            return results, writes
+
+    results, writes = asyncio.run(main())
+    assert writes == []
+    assert set(results) == {"Request cancelled"}
