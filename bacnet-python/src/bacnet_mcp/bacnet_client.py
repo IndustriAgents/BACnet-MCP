@@ -118,6 +118,7 @@ PRE_EXECUTION_ABORTS = frozenset(
 
 REQUEST_SLACK_S = 2.0  # on top of the APDU timeout, for one request's deadline
 DETAIL_BUDGET_S = 10.0  # discover_devices: time for reading names after the Who-Is
+WRITE_DEADLINE_CAP_S = 45.0  # a write call's overall deadline, unless one request needs more
 MAX_REAL = 3.4028234663852886e38  # largest finite IEEE 754 single
 
 
@@ -729,6 +730,19 @@ class BACnetClient:
         """Seconds one confirmed request may take before it is given up."""
         return self.config.apdu_timeout_ms / 1000.0 + REQUEST_SLACK_S
 
+    @property
+    def write_deadline(self) -> float:
+        """Seconds a whole write call may take, from the moment it starts.
+
+        It covers finding and re-checking the device as well as the
+        WriteProperty itself; a write is only sent while a full reply window
+        (request_deadline) is left. Kept under 50 s with the defaults (25 s),
+        so the server, not an MCP client's own 60 s timeout (which sends no
+        cancellation), decides the outcome.
+        """
+        rounds = self.config.apdu_retries + 2  # the identity check's attempts + the write
+        return max(self.request_deadline, min(WRITE_DEADLINE_CAP_S, rounds * self.request_deadline))
+
     async def _read_request(
         self, app: Application, make_request: Callable[[], Any], device_id: int
     ) -> Any:
@@ -1033,18 +1047,38 @@ class BACnetClient:
         array_index: int | None,
         address: str | None,
     ) -> dict[str, Any]:
+        # The overall deadline starts now. Everything before the send must be
+        # done while a full reply window is still left; otherwise the write is
+        # not sent at all (and never later).
+        loop = asyncio.get_running_loop()
+        send_by = loop.time() + self.write_deadline - self.request_deadline
         try:
             app = self._require_app()
             start = time.perf_counter()
-            addr, confirmed = await self._resolve(device_id, address)
-            if not confirmed:
-                # A cached address may now belong to another device.
-                await self._confirm_identity(app, addr, device_id, str(addr))
-            request = await self._write_request(
-                app, addr, object_type, object_instance, property_id, value, priority, array_index
-            )
+            with anyio.fail_after(max(0.0, send_by - loop.time())):
+                addr, confirmed = await self._resolve(device_id, address)
+                if not confirmed:
+                    # A cached address may now belong to another device.
+                    await self._confirm_identity(app, addr, device_id, str(addr))
+                request = await self._write_request(
+                    app,
+                    addr,
+                    object_type,
+                    object_instance,
+                    property_id,
+                    value,
+                    priority,
+                    array_index,
+                )
         except WriteError:
             raise
+        except TimeoutError:
+            raise WriteError(
+                f"the write could not be prepared within its {self.write_deadline:g} s "
+                "deadline (finding and checking the device took too long); it was not sent",
+                NOT_SENT,
+                False,
+            ) from None
         except Exception as exc:  # noqa: BLE001 - nothing has been sent yet
             message = (
                 str(exc)
@@ -1064,6 +1098,13 @@ class BACnetClient:
         task = asyncio.current_task()
         if task is not None and task.cancelling():
             raise WriteError("the call was cancelled before the write was sent", NOT_SENT, False)
+        if loop.time() > send_by:
+            raise WriteError(
+                f"the write's {self.write_deadline:g} s deadline ran out before it was sent; "
+                "it was not sent",
+                NOT_SENT,
+                False,
+            )
 
         # From here on the request may have reached the device: it is sent
         # exactly once (bacpypes3 has numberOfApduRetries=0) and never retried.

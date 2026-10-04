@@ -996,3 +996,89 @@ def test_discovery_details_have_a_budget(monkeypatch):
     assert device["details_partial"] is True
     assert device["name"] == "BACnet Mock Device"  # read before the budget ran out
     assert device["vendor"] is None
+
+
+def test_a_write_whose_deadline_runs_out_while_checking_the_device_is_never_sent(monkeypatch):
+    """The overall deadline starts with the call and includes the identity check.
+
+    The MCP SDK sends no cancellation when its own client-side timeout fires,
+    so the server's deadline is what stops a late write.
+    """
+    from bacnet_mcp import bacnet_client
+
+    # apdu 2000 ms -> request deadline 4 s; cap 5 s -> 1 s left to prepare.
+    monkeypatch.setattr(bacnet_client, "WRITE_DEADLINE_CAP_S", 5.0)
+
+    async def scenario():
+        async with running_mock() as mock, running_client(apdu_timeout_ms=2000) as client:
+            writes = count_requests(mock, "do_WritePropertyRequest")
+            original = mock.app.do_ReadPropertyRequest
+
+            async def slow_identity(apdu):
+                await asyncio.sleep(1.5)  # answered, but after the write's budget
+                await original(apdu)
+
+            mock.app.do_ReadPropertyRequest = slow_identity
+            start = time.perf_counter()
+            with pytest.raises(WriteError) as caught:
+                await client.write_property(
+                    MOCK_DEVICE_ID,
+                    "analog-output",
+                    1,
+                    "present-value",
+                    3.0,
+                    8,
+                    address=mock_address(mock),
+                )
+            elapsed = time.perf_counter() - start
+            await asyncio.sleep(2.0)  # long past the identity answer
+            return caught.value, elapsed, writes
+
+    error, elapsed, writes = run(scenario())
+    assert (error.outcome, error.request_sent) == ("not_sent", False)
+    assert "deadline" in str(error)
+    assert elapsed < 1.4
+    assert writes == []
+
+
+def test_the_deadline_is_checked_right_before_sending(monkeypatch):
+    """Even when nothing could interrupt the preparation (no await to cancel)."""
+    from bacnet_mcp import bacnet_client
+
+    monkeypatch.setattr(bacnet_client, "WRITE_DEADLINE_CAP_S", 5.0)  # 1 s to prepare
+    build = bacnet_client.BACnetClient._write_request
+
+    async def slow_build(self, *args):
+        request = await build(self, *args)
+        time.sleep(1.2)  # blocks the loop: no cancellation can be delivered
+        return request
+
+    monkeypatch.setattr(bacnet_client.BACnetClient, "_write_request", slow_build)
+
+    async def scenario():
+        async with running_mock() as mock, running_client(apdu_timeout_ms=2000) as client:
+            writes = count_requests(mock, "do_WritePropertyRequest")
+            with pytest.raises(WriteError) as caught:
+                await client.write_property(
+                    MOCK_DEVICE_ID,
+                    "analog-output",
+                    1,
+                    "present-value",
+                    3.0,
+                    8,
+                    address=mock_address(mock),
+                )
+            await asyncio.sleep(0.3)
+            return caught.value, writes
+
+    error, writes = run(scenario())
+    assert (error.outcome, error.request_sent) == ("not_sent", False)
+    assert "deadline ran out before it was sent" in str(error)
+    assert writes == []
+
+
+def test_the_default_write_deadline_stays_under_50_s():
+    assert BACnetClient(BACnetConfig()).write_deadline == 25.0
+    assert BACnetClient(BACnetConfig(apdu_retries=10)).write_deadline == 45.0
+    # One request that needs longer than the cap still gets its full window.
+    assert BACnetClient(BACnetConfig(apdu_timeout_ms=60000)).write_deadline == 62.0
