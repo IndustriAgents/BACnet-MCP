@@ -20,6 +20,7 @@ jobs:
   server:
     name: bacnet-python (MCP server)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: bacnet-python
@@ -52,6 +53,7 @@ jobs:
   mock:
     name: bacnet-mock-device
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: bacnet-mock-device
