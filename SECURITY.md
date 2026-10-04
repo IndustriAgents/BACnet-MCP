@@ -30,13 +30,15 @@ application on the office network.
   first, every time, before it gets near a real building.
 - **Writes stay off until you mean otherwise.** `BACNET_WRITES_ENABLED`
   defaults to `false`, and the write tools refuse to act until it is `true`.
-  The switch is read only from the process environment (e.g. the `env`
-  block of your MCP client's config) or from a file you name with
-  `bacnet-mcp --env-file PATH`. A `.env` that the server finds on its own in
-  its working directory — for a server started by an MCP client, often the
-  client's project, which you may not control — can set connection
-  settings but cannot turn writes on: the server ignores the switch there
-  and says so on stderr.
+  The switch, and `OBJECT_MAP_FILE` (which decides where alias writes go),
+  are read only from the process environment (e.g. the `env` block of your
+  MCP client's config) or from a file you name with
+  `bacnet-mcp --env-file PATH`. The server never reads a `.env` from its
+  working directory or a parent: for a server started by an MCP client that
+  is the client's project, which you may not control. The only implicit
+  `.env` is `bacnet-python/.env` of a source checkout, and from it only
+  `BACNET_*` connection settings are taken; anything else there is ignored
+  with a warning on stderr.
   Writes to a BACnet device move physical equipment (setpoints, outputs,
   schedules), there is no undo, and a language model will call a tool it has
   been given. Once writes are on, the model can write any property the device
@@ -45,9 +47,11 @@ application on the office network.
   operators recognise and can override.
 - **A write is sent at most once.** If the device does not answer, the
   server does not retransmit (BACnet clients normally do, and a device whose
-  acknowledgement was lost would apply the write again). The tool reports
-  `meta.outcome: "unknown"` and asks for a read-back before any retry; treat
-  that result as "may have happened".
+  acknowledgement was lost would apply the write again), and the write tools
+  are annotated as not idempotent. The tool reports `meta.outcome: "unknown"`
+  and asks for a read-back before any retry; treat that result as "may have
+  happened". Before every write the server re-checks that the device at the
+  address is the one you named.
 - **Bind to one interface.** To reach real devices, set `BACNET_INTERFACE` to
   the host's address on the BAS network with its prefix length (for example
   `192.168.1.10/24`) rather than `0.0.0.0`, and pick a

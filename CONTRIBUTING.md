@@ -128,13 +128,20 @@ These are shared with every server in the IndustriConnect suite:
 - **Read-only by default.** Anything that writes to a device stays separate
   from the read tools and refuses to act unless the server was started with
   `BACNET_WRITES_ENABLED=true`; the default is `false`. A safety switch like
-  this comes only from the process environment or an explicit `--env-file`,
-  never from an automatically found `.env`.
-- **No duplicate writes.** A write reaches the device at most once: only
-  reads are retried. When a write's answer is lost, report
+  this, and anything that decides where a write goes (`OBJECT_MAP_FILE`),
+  comes only from the process environment or an explicit `--env-file`. The
+  only implicit `.env` is `bacnet-python/.env`, never the working directory
+  or a parent, and it may set only `BACNET_*` connection settings.
+- **No duplicate writes.** A write reaches the device at most once: bacpypes3
+  never retransmits (`numberOfApduRetries=0`) and only reads are retried, by
+  the client itself. When a write's answer is lost, report
   `success: false`, `meta.outcome: "unknown"`, `meta.request_sent: true`
   ("may have been applied; read it back before retrying"). Write outcomes
-  are `written`, `rejected`, `unknown` or `not_sent`.
+  are `written`, `rejected` (only for a refusal that precedes execution),
+  `unknown` or `not_sent` (including anything that fails before sending).
+  Write tools are `destructiveHint: true, idempotentHint: false`.
+- **Every request has a deadline.** No call may hang: a read gives up with an
+  error, a write with outcome `unknown`.
 - **Never report what did not happen.** A tool returns `success: true` only
   for data that came from a device, or a write the device acknowledged.
   Nothing returns placeholder or made-up values; what is not implemented

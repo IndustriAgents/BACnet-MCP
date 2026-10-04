@@ -24,6 +24,7 @@ It logs to stderr and runs until Ctrl-C (or SIGTERM).
 | `--device-id` | `MOCK_BACNET_DEVICE_ID` | `12345` | Device instance number |
 | `--update-interval` | `MOCK_BACNET_UPDATE_INTERVAL` | `1.0` | Seconds between analog input updates |
 | `--verbose` | `MOCK_BACNET_VERBOSE` | off | Log every update |
+| `--exit-on-stdin-eof` | — | off | Stop when stdin closes (used by the tests, so a killed test run leaves no mock behind) |
 
 The default port is 47809, not the BACnet/IP standard 47808, so the mock and
 the MCP server (which binds 47808 by default) can run on one host. The mock
@@ -42,14 +43,18 @@ refuses to start if its UDP port is already bound.
 The objects carry the usual standard properties (`object-name`, `description`,
 `units`, `status-flags`, `priority-array`, `property-list`, …), and a
 ReadProperty of `device,4194303` (the wildcard instance) reads the mock's own
-device object. The device behaves like a real controller when a request is
-wrong:
+device object. It answers these wrong requests the way a controller would
+(it is a mock, so other corners of the standard may differ):
 
 - an object that does not exist → `object: unknown-object` (a write never
   creates one);
 - a property the object does not have → `property: unknown-property`;
 - a write to anything other than the two writable `present-value`s →
   `property: write-access-denied`;
+- a write at priority 6 (reserved for minimum on/off) →
+  `property: write-access-denied`;
+- an undefined enumeration value, e.g. binary `present-value` 2 →
+  `property: value-out-of-range`;
 - a value of the wrong datatype → a BACnet reject.
 
 ## Talking to it

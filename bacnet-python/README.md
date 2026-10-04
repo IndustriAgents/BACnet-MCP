@@ -32,9 +32,11 @@ By default the server binds UDP `127.0.0.1:47808`, has no broadcast address
 and refuses writes. Environment variables configure the interface and prefix,
 port, device instance, write switch, timeouts, log level and the optional
 object map; see [Configuration](../README.md#configuration) for the full
-list and [`.env.example`](.env.example) for a `.env` file. The write switch
-`BACNET_WRITES_ENABLED` is read only from the process environment or a file
-named with `--env-file`, never from an automatically found `.env`.
+list and [`.env.example`](.env.example) for this directory's `.env` — the
+only one read without `--env-file`, and only for `BACNET_*` connection
+settings. A `.env` in the working directory or a parent is never read. The
+write switch `BACNET_WRITES_ENABLED` and `OBJECT_MAP_FILE` are read only from
+the process environment or a file named with `--env-file`.
 
 `bacnet-mcp --help` lists the options (`--env-file PATH`, `--version`).
 

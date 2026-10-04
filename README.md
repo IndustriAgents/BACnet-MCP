@@ -27,20 +27,28 @@ Early, but real: the tools speak BACnet/IP. What works today:
   (with an optional priority, or `null` to relinquish a priority slot) and
   report success only when the device acknowledges. They are **off by
   default** and refuse to act unless `BACNET_WRITES_ENABLED=true` comes from
-  the process environment or `--env-file` (never from an automatically found
-  `.env`). A write goes out **at most once**: if no answer comes back it is
-  not retransmitted, and the result is `success: false` with
-  `meta.outcome: "unknown"` — the write may have been applied, so read it
-  back before retrying.
-- Every failure — a BACnet error, reject or abort, a timeout, a datagram the
-  OS refused to send, a bad or unknown argument — comes back as
-  `success: false` with a readable `error`. Bad settings stop the server at
-  startup.
+  the process environment or `--env-file` (never from an automatically
+  loaded `.env`). A write goes out **at most once**: the BACnet stack never
+  retransmits, and if no usable answer comes back the result is
+  `success: false` with `meta.outcome: "unknown"` — the write may have been
+  applied, so read it back before retrying. Before every write the device at
+  the address is checked again to really be `device_id`, and values are not
+  guessed: REALs must be finite, enumerations take a defined name or number,
+  booleans go only to boolean and binary properties, priority 6 (reserved
+  for minimum on/off) is refused, and a write too large for one message is
+  refused (segmented writes are not supported).
+- Every failure — a BACnet error, reject or abort, a timeout, a garbled
+  reply, a datagram the OS refused to send, a bad or unknown argument —
+  comes back as `success: false` with a readable `error`. Every request has
+  a deadline (`BACNET_APDU_TIMEOUT_MS` + 2 s per attempt), so no call hangs.
+  Bad settings stop the server at startup.
 - CI runs the server against the mock over BACnet/IP on the runner's loopback
   interface, through a real MCP stdio session.
 
 Known limitations:
 
+- bacpypes3 is pinned to 0.0.110: the server relies on some of its
+  internals, so a new release is allowed only after it has been re-verified.
 - It has been tested against the mock device only, not yet against
   third-party controllers, and only with directed (unicast) Who-Is on
   loopback: the global broadcast path is implemented but not exercised by
@@ -149,7 +157,8 @@ building automation network *with its prefix length*, e.g.
 
 The server reads these environment variables when it starts. Set them in the
 process environment (your shell, or the `env` block of your MCP client's
-config) or in a `.env` file.
+config), in a file given with `--env-file`, or (connection settings only) in
+`bacnet-python/.env`; see below.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -157,21 +166,30 @@ config) or in a `.env` file.
 | `BACNET_PORT` | `47808` | Local BACnet/IP UDP port |
 | `BACNET_DEVICE_INSTANCE` | `1234` | Device instance the server presents on the network (pick one no real device uses) |
 | `BACNET_WRITES_ENABLED` | `false` | `true` (or `1`, `yes`, `on`) allows the write tools; otherwise they refuse every write. Anything other than these or `false`/`0`/`no`/`off` is an error. **Read only from the process environment or `--env-file`**, see below |
-| `BACNET_APDU_TIMEOUT_MS` | `3000` | How long to wait for a device's answer before retrying (100–60000) |
-| `BACNET_APDU_RETRIES` | `3` | Retries of a *read* after a timeout (0–10); writes are never retried |
+| `BACNET_APDU_TIMEOUT_MS` | `3000` | How long to wait for a device's answer (100–60000); each request is given up 2 s after that |
+| `BACNET_APDU_RETRIES` | `3` | How often the server retries a *read* that got no answer (0–10); writes are never retried |
 | `BACNET_LOG_LEVEL` | `WARNING` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`; logs always go to stderr |
-| `OBJECT_MAP_FILE` | unset | JSON file of aliases for the `*_by_alias` tools |
+| `OBJECT_MAP_FILE` | unset | JSON file of aliases for the `*_by_alias` tools. **Read only from the process environment or `--env-file`**: it decides where alias writes go |
 
-`bacnet-mcp` loads a `.env` file from its working directory (or the nearest
-parent that has one) before it reads any of these; see
-[`bacnet-python/.env.example`](bacnet-python/.env.example). Values already
-set in the process environment win over the file. Such a `.env` may set
-connection settings but **not** `BACNET_WRITES_ENABLED`: an MCP client that
-starts the server directly runs it in the client's project, whose `.env` you
-may not control, so the server ignores the switch there with a warning on
-stderr. To keep the switch in a file, name the file explicitly:
-`bacnet-mcp --env-file /path/to/bacnet.env` (add `"--env-file", "…"` to the
-`args` in your MCP client's config). An invalid value (say
+**`.env` files.** Values already set in the process environment always win.
+
+- `bacnet-mcp --env-file PATH` reads every variable in that file, the write
+  switch and `OBJECT_MAP_FILE` included (add `"--env-file", "…"` to the
+  `args` in your MCP client's config).
+- Without it, the only `.env` the server reads is `bacnet-python/.env` of
+  this checkout (see [`bacnet-python/.env.example`](bacnet-python/.env.example)),
+  and only for `BACNET_*` connection settings. It never reads a `.env` from
+  its working directory or a parent directory: an MCP client that starts the
+  server directly runs it in the client's project, which you may not
+  control, and settings like the interface decide where a write goes. An
+  installed copy of the package reads no `.env` at all.
+- In `bacnet-python/.env`, `BACNET_WRITES_ENABLED`, `OBJECT_MAP_FILE` and
+  anything that is not a `BACNET_*` setting (`PATH`, `LD_PRELOAD`,
+  `PYTHON*`, proxies, …) are ignored with a warning on stderr. Names are
+  compared upper-cased, as Windows stores them, so `bacnet_writes_enabled`
+  is caught too.
+
+An invalid value (say
 `BACNET_WRITES_ENABLED=maybe`), an object map that cannot be read or parsed,
 a UDP port that is already in use, or a broadcast address that cannot be
 bound stops the server at startup with a message on stderr. The object map
@@ -195,7 +213,7 @@ An object map is a JSON object keyed by alias. `device`, `object_type` and
 |------|--------------|
 | `discover_devices` | Who-Is (broadcast, or to `address`), optional `low_limit`/`high_limit`, waits `timeout_ms`; returns each device's instance, address, vendor id, name, vendor and model |
 | `read_property` | ReadProperty of `device_id` / `object_type` / `object_instance` / `property_id` (default `present-value`), optional `array_index` and `address` |
-| `write_property` | WriteProperty of `value` with optional `priority` (1–16; `null`, or the string `"null"`, relinquishes); refused unless `BACNET_WRITES_ENABLED=true` |
+| `write_property` | WriteProperty of `value` with optional `priority` (1–16 except 6; `null`, or the string `"null"`, relinquishes); sent at most once; refused unless `BACNET_WRITES_ENABLED=true` |
 | `list_objects` | Lists the aliases loaded from `OBJECT_MAP_FILE` |
 | `read_object_by_alias` | `read_property` for an alias from the object map |
 | `write_object_by_alias` | `write_property` for an alias, at the alias's priority; refused unless writes are enabled |
@@ -207,9 +225,14 @@ misspelt `priorty`) is an error, not silently ignored, and instance numbers,
 indexes and priorities must be JSON integers (`true` or `"8"` is refused).
 
 The write tools also report `meta.outcome` and `meta.request_sent`:
-`written` (the device acknowledged), `rejected` (the device refused it),
-`unknown` (it was sent and no answer came back: it may have been applied,
-read it back before retrying) or `not_sent` (refused before sending).
+`written` (the device acknowledged), `rejected` (the device refused it before
+executing it: a BACnet Error or Reject, or a pre-execution Abort such as
+segmentation-not-supported), `unknown` (it was sent and no usable answer
+came back, or the device aborted for a reason that can follow execution: it
+may have been applied, read it back before retrying) or `not_sent` (refused
+before sending, including values that cannot be encoded). The write tools
+are annotated `destructiveHint: true, idempotentHint: false`: an MCP client
+should not repeat them on its own.
 
 ## Layout
 
