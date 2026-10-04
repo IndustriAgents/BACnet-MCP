@@ -29,6 +29,7 @@ import random
 import signal
 import socket
 import sys
+import threading
 from dataclasses import dataclass
 
 from bacpypes3.app import Application
@@ -39,6 +40,7 @@ from bacpypes3.local.device import DeviceObject
 from bacpypes3.local.networkport import NetworkPortObject
 from bacpypes3.local.object import Object as LocalObject
 from bacpypes3.object import BinaryValueObject as _BinaryValueObject
+from bacpypes3.primitivedata import Enumerated
 
 log = logging.getLogger("bacnet_mock_device")
 
@@ -107,6 +109,9 @@ class _RestrictedWrites:
         name = attr if isinstance(attr, str) else self._property_identifier_class(attr).attr
         if name not in self._writable:
             raise PropertyError("writeAccessDenied")
+        if isinstance(value, Enumerated) and int(value) not in type(value)._attr_map:
+            # e.g. BinaryPV 2: bacpypes3 would store it, a controller refuses it
+            raise PropertyError("valueOutOfRange")
         await super().write_property(attr, value, index, priority)
 
 
@@ -140,6 +145,9 @@ class MockApplication(Application):
     - A WriteProperty to a property the object does not have is answered with
       ``property: unknown-property``; bacpypes3 alone answers
       ``device: operational-problem`` (it fails while decoding the value).
+    - A WriteProperty at priority 6 (reserved for minimum on/off) is refused
+      with ``property: write-access-denied``, and an undefined enumeration
+      value (e.g. binary present-value 2) with ``property: value-out-of-range``.
     """
 
     async def do_ReadPropertyRequest(self, apdu) -> None:  # noqa: N802 - bacpypes3 name
@@ -151,6 +159,9 @@ class MockApplication(Application):
         await super().do_ReadPropertyRequest(apdu)
 
     async def do_WritePropertyRequest(self, apdu) -> None:  # noqa: N802 - bacpypes3 name
+        if apdu.priority == 6:
+            # Priority 6 is reserved for the minimum on/off algorithm.
+            raise PropertyError("writeAccessDenied")
         obj = self.get_object_id(apdu.objectIdentifier)
         if obj is not None and obj.get_property_type(apdu.propertyIdentifier) is None:
             raise PropertyError("unknownProperty")
@@ -344,6 +355,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "(default: %(default)s, env MOCK_BACNET_UPDATE_INTERVAL)",
     )
     parser.add_argument(
+        "--exit-on-stdin-eof",
+        action="store_true",
+        help="stop when stdin is closed, e.g. because the process that started the "
+        "mock (a test run) has died",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         default=_env("MOCK_BACNET_VERBOSE", "false").strip().lower() in {"1", "true", "yes", "on"},
@@ -352,7 +369,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-async def run(config: MockConfig) -> None:
+def _watch_stdin(loop: asyncio.AbstractEventLoop, stop: asyncio.Event) -> None:
+    """Set ``stop`` when stdin reaches end of file (the parent went away)."""
+    try:
+        while sys.stdin.buffer.read(4096):
+            pass
+    finally:
+        loop.call_soon_threadsafe(stop.set)
+
+
+async def run(config: MockConfig, exit_on_stdin_eof: bool = False) -> None:
     device = BACnetMockDevice(config)
     await device.start()
 
@@ -363,6 +389,8 @@ async def run(config: MockConfig) -> None:
             loop.add_signal_handler(sig, stop.set)
         except NotImplementedError:  # pragma: no cover - Windows
             pass
+    if exit_on_stdin_eof:
+        threading.Thread(target=_watch_stdin, args=(loop, stop), daemon=True).start()
     try:
         await stop.wait()
     finally:
@@ -389,7 +417,7 @@ def main(argv: list[str] | None = None) -> None:
             device_id=args.device_id,
             update_interval=args.update_interval,
         )
-        asyncio.run(run(config))
+        asyncio.run(run(config, exit_on_stdin_eof=args.exit_on_stdin_eof))
     except MockConfigError as exc:
         sys.exit(f"bacnet-mock-device: {exc}")
     except KeyboardInterrupt:

@@ -270,3 +270,51 @@ def test_help_runs():
     )
     assert result.returncode == 0
     assert "--device-id" in result.stdout
+
+
+def test_priority_6_is_refused():
+    async def scenario(mock, client, addr):
+        err = await error_of(
+            client.write_property(addr, "analog-output,1", "present-value", 5.0, priority=6)
+        )
+        assert err == "write-access-denied"
+        assert await read(client, addr, "analog-output,1") == pytest.approx(50.0)
+
+    run_with_mock(scenario)
+
+
+def test_undefined_enumeration_values_are_refused():
+    async def scenario(mock, client, addr):
+        err = await error_of(
+            client.write_property(addr, "binary-value,1", "present-value", 2, priority=8)
+        )
+        assert err == "value-out-of-range"
+        assert str(await read(client, addr, "binary-value,1")) == "active"
+
+    run_with_mock(scenario)
+
+
+def test_the_mock_exits_when_its_parent_goes_away():
+    """--exit-on-stdin-eof: a killed test run leaves no mock behind."""
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            str(MOCK_SCRIPT),
+            "--port",
+            str(free_udp_port()),
+            "--exit-on-stdin-eof",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert "listening on" in proc.stderr.readline()
+        proc.stdin.close()  # what the OS does when the parent dies
+        assert proc.wait(timeout=15) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        proc.stderr.close()
