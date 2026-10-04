@@ -28,6 +28,11 @@ class AppContext:
 
 log = logging.getLogger(__name__)
 
+#: At end of input, how long already-received calls may take to finish (device
+#: calls are cancelled at once, so this is only reached by a stuck handler).
+DRAIN_LIMIT_S = 5.0
+DRAIN_SETTLE_S = 0.05
+
 #: Errors from writing a reply to a client that has disconnected.
 _UNDELIVERABLE = (
     anyio.ClosedResourceError,
@@ -66,6 +71,13 @@ class _BACnetFastMCP(FastMCP):
     """
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        self.calls_in_flight += 1
+        try:
+            return await self._call_tool(name, arguments)
+        finally:
+            self.calls_in_flight -= 1
+
+    async def _call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         tool = self._tool_manager.get_tool(name)
         if tool is not None:
             # FastMCP drops arguments it does not know; a misspelt "priorty"
@@ -92,6 +104,8 @@ class _BACnetFastMCP(FastMCP):
     on_client_disconnect: Callable[[], None] | None = None
     #: True once the client's stdin has reached end of file.
     client_gone: bool = False
+    #: Tool calls currently running.
+    calls_in_flight: int = 0
 
     async def run_stdio_async(self) -> None:
         """Serve MCP on stdio; stop pending device requests when the client leaves.
@@ -130,11 +144,30 @@ class _BACnetFastMCP(FastMCP):
             async with sink:
                 async for message in source:
                     await sink.send(message)
+                # End of input. Stop device calls first, then let the calls
+                # already received finish and answer (ping, list_objects, and the
+                # device calls' not_sent envelopes) before the session closes:
+                # the SDK closes the reply stream as soon as its input ends.
+                self._client_disconnected()
+                await self._drain_calls()
         finally:
-            self.client_gone = True
-            log.info("MCP client disconnected; stopping pending device requests")
-            if self.on_client_disconnect is not None:
-                self.on_client_disconnect()
+            self._client_disconnected()
+
+    def _client_disconnected(self) -> None:
+        if self.client_gone:
+            return
+        self.client_gone = True
+        log.info("MCP client disconnected; stopping pending device requests")
+        if self.on_client_disconnect is not None:
+            self.on_client_disconnect()
+
+    async def _drain_calls(self) -> None:
+        """Wait (briefly) for tool calls that are already running to finish."""
+        with anyio.move_on_after(DRAIN_LIMIT_S):
+            # Let requests that were just relayed reach their handlers.
+            await anyio.sleep(DRAIN_SETTLE_S)
+            while self.calls_in_flight:
+                await anyio.sleep(0.01)
 
 
 class BACnetMCPServer:

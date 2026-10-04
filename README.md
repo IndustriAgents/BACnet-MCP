@@ -38,7 +38,9 @@ Early, but real: the tools speak BACnet/IP. What works today:
   for minimum on/off) is refused, and a write too large for one message is
   refused (segmented writes are not supported). If the MCP client cancels the
   call or disconnects before the write has gone out, it is never sent
-  (`not_sent`); if it already went out, the result is `unknown`.
+  (`not_sent`); if it already went out, the result is `unknown`. Calls that
+  do not touch a device (`ping`, `list_objects`) still answer when they
+  arrive just before the client disconnects.
 - Every failure — a BACnet error, reject or abort, a timeout, a garbled
   reply, a datagram the OS refused to send, a bad or unknown argument —
   comes back as `success: false` with a readable `error`. Every request has

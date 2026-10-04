@@ -607,3 +607,38 @@ def test_a_cancelled_write_is_never_sent():
         assert "result" not in replies[2]
     assert replies[3]["result"]["structuredContent"]["success"] is True
     assert returncode == 0, errors
+
+
+def test_calls_sent_just_before_eof_are_answered_but_writes_are_not_sent():
+    """ping and list_objects still answer; a pending device write is stopped."""
+    with slow_identity_mock() as (address, mock_output):
+        write = target("analog-output", 1, property_id="present-value", address=address)
+        requests = [
+            *INITIALIZE,
+            tool_call(2, "ping", {}),
+            tool_call(3, "list_objects", {}),
+            tool_call(4, "write_property", {**write, "value": 9, "priority": 8}),
+            {"jsonrpc": "2.0", "id": 5, "method": "tools/list"},
+        ]
+        env = isolated_env(**{**server_env(writes=True), "BACNET_APDU_TIMEOUT_MS": "10000"})
+        start = time.monotonic()
+        result = subprocess.run(
+            SERVER_COMMAND,
+            input="".join(json.dumps(r) + "\n" for r in requests),  # then EOF
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+        elapsed = time.monotonic() - start
+        writes = writes_seen(mock_output, IDENTITY_DELAY + 1.0)
+    replies = {m["id"]: m for m in map(json.loads, result.stdout.splitlines()) if "id" in m}
+    assert result.returncode == 0, result.stderr
+    assert replies[2]["result"]["structuredContent"]["success"] is True
+    assert "objects" in replies[3]["result"]["structuredContent"]["data"]
+    assert len(replies[5]["result"]["tools"]) == 7
+    if 4 in replies:  # the stopped write answers not_sent
+        meta = replies[4]["result"]["structuredContent"]["meta"]
+        assert (meta["outcome"], meta["request_sent"]) == ("not_sent", False)
+    assert writes == []
+    assert elapsed < IDENTITY_DELAY + 1.0  # the write was not waited for

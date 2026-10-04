@@ -145,9 +145,10 @@ These are shared with every server in the IndustriConnect suite:
   deadline, set when it starts and shared by every request it makes; a
   write not sent while a full reply window is left is `not_sent`, never
   sent later.
-- **A gone client sends nothing.** When stdin closes, pending calls are
-  cancelled; the last check before a write is sent (closing flag, task
+- **A gone client sends nothing.** When stdin closes, pending device calls
+  are cancelled; the last check before a write is sent (closing flag, task
   cancellation, no `await` in between) makes an unsent write `not_sent`.
+  Calls already received still answer (briefly) before the session closes.
 - **Never report what did not happen.** A tool returns `success: true` only
   for data that came from a device, or a write the device acknowledged.
   Nothing returns placeholder or made-up values; what is not implemented
