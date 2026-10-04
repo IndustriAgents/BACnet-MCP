@@ -25,6 +25,7 @@ from pydantic import StrictBool, StrictInt
 from .bacnet_client import (
     MAX_DEVICE_INSTANCE,
     MAX_INSTANCE,
+    MAY_HAVE_BEEN_APPLIED,
     NOT_SENT,
     UNKNOWN,
     BACnetClient,
@@ -46,8 +47,10 @@ MAX_TIMEOUT_MS = 60000
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
 LOCAL_ONLY = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+# Never idempotent: a client must not retry a write on its own (a lost reply
+# does not mean the write was not applied).
 WRITES_DEVICE = ToolAnnotations(
-    readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True
+    readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True
 )
 
 
@@ -112,7 +115,12 @@ def check_target(
 
 
 def check_priority(priority: Any) -> int | None:
-    return None if priority is None else check_int("priority", priority, 1, 16)
+    if priority is None:
+        return None
+    check_int("priority", priority, 1, 16)
+    if priority == 6:
+        raise ArgumentError("priority 6 is reserved for the minimum on/off algorithm")
+    return priority
 
 
 def check_value(value: Any) -> WriteValue:
@@ -267,15 +275,20 @@ async def guarded(
     except (ArgumentError, BACnetClientError) as exc:
         return fail(str(exc), {**base, **(write_outcome(NOT_SENT, False) if write else {})})
     except ErrorRejectAbortNack as exc:  # a BaseException in bacpypes3; never let it escape
-        return fail(
-            f"BACnet failure: {exc}", {**base, **(write_outcome(UNKNOWN, True) if write else {})}
-        )
+        if write:
+            return fail(
+                f"BACnet failure: {exc}: {MAY_HAVE_BEEN_APPLIED}",
+                {**base, **write_outcome(UNKNOWN, True)},
+            )
+        return fail(f"BACnet failure: {exc}", base)
     except Exception as exc:  # noqa: BLE001 - the model gets an envelope, never a crash
         log.exception("%s failed", tool)
-        return fail(
-            f"{type(exc).__name__}: {exc}",
-            {**base, **(write_outcome(UNKNOWN, True) if write else {})},
-        )
+        if write:
+            return fail(
+                f"{type(exc).__name__}: {exc}: {MAY_HAVE_BEEN_APPLIED}",
+                {**base, **write_outcome(UNKNOWN, True)},
+            )
+        return fail(f"{type(exc).__name__}: {exc}", base)
 
 
 def register_tools(server: FastMCP, resources: ToolResources) -> None:
@@ -460,7 +473,8 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
                 the string "null") relinquishes the given priority slot of a
                 commandable object.
             priority: Command priority 1 (highest) to 16 (lowest) for
-                commandable objects; required with a null value.
+                commandable objects (6 is reserved and refused); required with
+                a null value.
             array_index: Optional array index for array properties.
             address: Optional device address, "ip" or "ip:port".
         """

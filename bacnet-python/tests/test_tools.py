@@ -12,7 +12,14 @@ import anyio
 import pytest
 from bacpypes3.apdu import AbortPDU
 from bacpypes3.primitivedata import Real
-from helpers import MOCK_DEVICE_ID, client_config, mock_address, mock_object, running_mock
+from helpers import (
+    MOCK_DEVICE_ID,
+    client_config,
+    lose_write_acks,
+    mock_address,
+    mock_object,
+    running_mock,
+)
 from mcp import ClientSession
 from mcp.shared.memory import (
     create_client_server_memory_streams,
@@ -154,7 +161,12 @@ def test_every_tool_is_listed_with_a_description():
         assert tool.description and len(tool.description) > 40, tool.name
         assert tool.annotations is not None, tool.name
     by_name = {t.name: t for t in tools}
-    assert by_name["write_property"].annotations.destructiveHint is True
+    for name in ("write_property", "write_object_by_alias"):
+        assert by_name[name].annotations.destructiveHint is True
+        assert by_name[name].annotations.idempotentHint is False  # never invite a retry
+        assert by_name[name].annotations.readOnlyHint is False
+    for name in ("discover_devices", "read_property", "read_object_by_alias", "list_objects"):
+        assert by_name[name].annotations.readOnlyHint is True
     assert by_name["read_property"].annotations.readOnlyHint is True
     required = set(by_name["read_property"].inputSchema["required"])
     assert required == {"device_id", "object_type", "object_instance"}
@@ -212,6 +224,7 @@ WRITE = {**READ, "object_type": "analog-output", "property_id": "present-value",
         ("discover_devices", {"low_limit": 0, "high_limit": 5000000}, "high_limit"),
         ("write_property", {**WRITE, "priority": 0}, "priority must be between"),
         ("write_property", {**WRITE, "priority": 17}, "priority must be between"),
+        ("write_property", {**WRITE, "priority": 6}, "priority 6 is reserved"),
         ("write_property", {**WRITE, "value": None}, "give a priority"),
         ("write_property", {**WRITE, "value": [1, 2]}, "Invalid arguments: value"),
         ("write_property", {**WRITE, "object_instance": "one"}, "Invalid arguments"),
@@ -566,6 +579,8 @@ def test_write_failures_report_the_outcome(error, outcome, sent):
     envelope = with_session(make_server(client), scenario)
     assert envelope["success"] is False
     assert (envelope["meta"]["outcome"], envelope["meta"]["request_sent"]) == (outcome, sent)
+    if outcome == "unknown":
+        assert "may have been applied" in envelope["error"]
 
 
 def test_unknown_arguments_to_a_write_say_nothing_was_sent():
@@ -583,14 +598,6 @@ def test_a_lost_ack_through_the_tool_is_unknown_and_sent_once():
             server = BACnetMCPServer(
                 client=BACnetClient(client_config(apdu_retries=3)), tool_config=ToolConfig()
             )
-            writes = []
-            original = mock.app.do_WritePropertyRequest
-
-            async def counting(apdu):
-                writes.append(apdu)
-                await original(apdu)
-
-            mock.app.do_WritePropertyRequest = counting
             async with create_connected_server_and_client_session(server.mcp) as session:
                 await call(
                     session,
@@ -602,8 +609,7 @@ def test_a_lost_ack_through_the_tool_is_unknown_and_sent_once():
                         "address": mock_address(mock),
                     },
                 )
-                for link_layer in mock.app.link_layers.values():
-                    link_layer.server.local_transport.sendto = lambda data, addr=None: None
+                writes = lose_write_acks(mock)
                 envelope = await call(
                     session,
                     "write_property",
