@@ -293,3 +293,16 @@ def test_unknown_log_level_is_a_config_error(clean_env):
     clean_env["BACNET_LOG_LEVEL"] = "LOUD"
     with pytest.raises(ConfigError, match="BACNET_LOG_LEVEL"):
         cli.configure_logging()
+
+
+def test_non_ascii_names_in_the_implicit_dotenv_are_refused(clean_env, tmp_path, capsys):
+    cli.load_environment(implicit_file=project(tmp_path, "BACNET_PÖRT=47991\n"))
+    assert not any(name.startswith("BACNET_P") for name in os.environ)
+    assert "not an ASCII name" in capsys.readouterr().err
+
+
+def test_the_object_map_is_never_taken_from_the_implicit_dotenv(clean_env, tmp_path, capsys):
+    """OBJECT_MAP_FILE decides which device an alias write goes to."""
+    cli.load_environment(implicit_file=project(tmp_path, "OBJECT_MAP_FILE=/tmp/evil.json\n"))
+    assert "OBJECT_MAP_FILE" not in os.environ
+    assert "it decides where writes go" in capsys.readouterr().err
