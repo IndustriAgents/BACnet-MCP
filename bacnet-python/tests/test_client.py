@@ -1211,3 +1211,55 @@ def test_a_read_call_has_one_deadline_too(monkeypatch):
             return time.perf_counter() - start
 
     assert run(scenario()) < 7.5
+
+
+def test_a_cancellation_swallowed_during_preparation_still_stops_the_write(monkeypatch):
+    """The pre-send checkpoint and cancelling() check are the last line of defence.
+
+    Normally a cancellation interrupts the preparation at its next await. If a
+    library on that path catches CancelledError and carries on, only the
+    checks right before app.request() notice the pending cancellation.
+    """
+    from bacnet_mcp import bacnet_client
+
+    build = bacnet_client.BACnetClient._write_request
+
+    async def careless_build(self, *args):
+        request = await build(self, *args)
+        try:
+            await asyncio.sleep(0.5)  # the cancellation arrives here ...
+        except asyncio.CancelledError:
+            pass  # ... and is swallowed
+        return request
+
+    monkeypatch.setattr(bacnet_client.BACnetClient, "_write_request", careless_build)
+
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            writes = count_requests(mock, "do_WritePropertyRequest")
+            call = asyncio.ensure_future(
+                client.write_property(
+                    MOCK_DEVICE_ID,
+                    "analog-output",
+                    1,
+                    "present-value",
+                    4.0,
+                    8,
+                    address=mock_address(mock),
+                )
+            )
+            await asyncio.sleep(0.2)
+            call.cancel()  # what the MCP SDK does on notifications/cancelled
+            outcome = None
+            try:
+                await call
+            except WriteError as exc:
+                outcome = (exc.outcome, exc.request_sent)
+            except asyncio.CancelledError:
+                outcome = "cancelled"
+            await asyncio.sleep(0.3)
+            return outcome, writes
+
+    outcome, writes = run(scenario())
+    assert writes == []
+    assert outcome in (("not_sent", False), "cancelled")

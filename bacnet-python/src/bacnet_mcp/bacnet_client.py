@@ -1130,7 +1130,10 @@ class BACnetClient:
 
         # Last chance not to send: deliver a pending cancellation (the client
         # cancelled the call, or disconnected), then check, with no await
-        # between the check and app.request().
+        # between the check and app.request(). Normally a cancellation already
+        # interrupts the preparation at an await; these checks matter when
+        # something on that path swallowed the CancelledError (task.cancelling()
+        # still counts it) -- see the test with a "careless" library.
         await anyio.lowlevel.checkpoint()
         if self._closing:
             raise WriteError(
