@@ -6,6 +6,7 @@ import logging
 import os
 import socket
 import sys
+from pathlib import Path
 
 import pytest
 from helpers import free_udp_port
@@ -22,53 +23,124 @@ def test_environment_is_read_when_the_client_is_built_not_at_import(clean_env):
     assert BACnetClient().config.port == 47999
 
 
-def test_dotenv_values_reach_the_client(clean_env, tmp_path, monkeypatch):
-    (tmp_path / ".env").write_text(
-        "BACNET_INTERFACE=127.0.0.1\nBACNET_PORT=47998\nBACNET_DEVICE_INSTANCE=4321\n",
-        encoding="utf-8",
+def project(tmp_path: Path, content: str) -> Path:
+    """A stand-in for bacnet-python/.env (the real one is never touched)."""
+    env = tmp_path / "bacnet-python" / ".env"
+    env.parent.mkdir(exist_ok=True)
+    env.write_text(content, encoding="utf-8")
+    return env
+
+
+def test_the_project_dotenv_sets_connection_settings(clean_env, tmp_path):
+    env = project(
+        tmp_path, "BACNET_INTERFACE=127.0.0.1\nBACNET_PORT=47998\nBACNET_DEVICE_INSTANCE=4321\n"
     )
-    monkeypatch.chdir(tmp_path)
-    cli.load_environment()
+    cli.load_environment(implicit_file=env)
     server = BACnetMCPServer()
     assert server.client.config.port == 47998
     assert server.client.config.device_instance == 4321
 
 
-def test_an_implicit_dotenv_cannot_enable_writes(clean_env, tmp_path, monkeypatch, capsys):
+def test_the_implicit_dotenv_is_the_projects_not_the_working_directorys():
+    # This checkout: <repo>/bacnet-python/src/bacnet_mcp/cli.py
+    expected = Path(cli.__file__).resolve().parents[2] / ".env"
+    assert cli.project_env_file() == expected
+    assert expected.parent.name == "bacnet-python"
+    # An installed package has no implicit .env at all.
+    installed = "/usr/lib/python3.11/site-packages/bacnet_mcp/cli.py"
+    assert cli.project_env_file(installed) is None
+
+
+@pytest.mark.parametrize("where", ["cwd", "parent"])
+def test_a_dotenv_in_the_working_directory_or_a_parent_is_not_read(
+    clean_env, tmp_path, monkeypatch, where
+):
     # Started by an MCP client, the working directory is the client's project,
-    # which may not be trusted: its .env must not be able to turn writes on.
+    # which may not be trusted; settings there could redirect a write.
     (tmp_path / ".env").write_text(
-        "BACNET_PORT=47994\nBACNET_WRITES_ENABLED=true\n", encoding="utf-8"
+        "BACNET_PORT=47994\nBACNET_INTERFACE=10.9.9.9\nBACNET_WRITES_ENABLED=true\n",
+        encoding="utf-8",
     )
-    monkeypatch.chdir(tmp_path)
+    cwd = tmp_path if where == "cwd" else tmp_path / "sub" / "dir"
+    cwd.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(cwd)
     cli.load_environment()
+    assert "BACNET_PORT" not in clean_env
     config = BACnetConfig.from_env()
-    assert config.writes_enabled is False
-    assert config.port == 47994  # connection settings still apply
-    assert "ignoring BACNET_WRITES_ENABLED" in capsys.readouterr().err
+    assert (config.port, config.writes_enabled) == (47808, False)
+
+
+GATE_LINES = [
+    "BACNET_WRITES_ENABLED=true",
+    "export BACNET_WRITES_ENABLED=true",
+    "'BACNET_WRITES_ENABLED'=true",
+    '"BACNET_WRITES_ENABLED"=true',
+    "  BACNET_WRITES_ENABLED  =  true",
+    'export   BACNET_WRITES_ENABLED="true"',
+    "bacnet_writes_enabled=true",
+    "Bacnet_Writes_Enabled=true",
+    "export bacnet_writes_enabled='true'",
+    "bacnet_wr\u0131tes_enabled=true",  # dotless i: .upper() is BACNET_WRITES_ENABLED
+    "OTHER_SYSTEM_CMDS_ENABLED=true",
+    "x_state_change_enabled=true",
+]
+
+
+def windows_environ(base: dict[str, str]) -> os._Environ:
+    """os.environ as on Windows: names are upper-cased on the way in."""
+    data = {k.upper(): v for k, v in base.items()}
+    return os._Environ(data, str.upper, lambda v: v, str.upper, lambda v: v)
+
+
+@pytest.mark.parametrize("platform", ["posix", "windows"])
+@pytest.mark.parametrize("line", GATE_LINES)
+def test_no_spelling_of_a_safety_switch_passes_the_implicit_dotenv(
+    clean_env, tmp_path, monkeypatch, capsys, platform, line
+):
+    if platform == "windows":
+        monkeypatch.setattr(os, "environ", windows_environ(clean_env))
+    cli.load_environment(implicit_file=project(tmp_path, line + "\n"))
+    assert BACnetConfig.from_env().writes_enabled is False
+    assert not any(cli.is_gate(name) for name in os.environ)
+    assert "ignoring" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
-    "name", ["BACNET_WRITES_ENABLED", "OTHER_SYSTEM_CMDS_ENABLED", "X_STATE_CHANGE_ENABLED"]
+    "name",
+    [
+        "LD_PRELOAD",
+        "DYLD_INSERT_LIBRARIES",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "HTTPS_PROXY",
+        "SSL_CERT_FILE",
+        "FASTMCP_DEBUG",
+        "PATH",
+        "OBJECT_MAP_FILE",
+        "object_map_file",
+    ],
 )
-def test_every_safety_switch_is_ignored_in_an_implicit_dotenv(
-    clean_env, tmp_path, monkeypatch, capsys, name
+def test_the_implicit_dotenv_sets_only_bacnet_connection_settings(
+    clean_env, tmp_path, capsys, name
 ):
-    (tmp_path / ".env").write_text(f"{name}=true\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
-    cli.load_environment()
-    assert name not in clean_env
-    assert f"ignoring {name}" in capsys.readouterr().err
+    before = dict(os.environ)
+    cli.load_environment(implicit_file=project(tmp_path, f"{name}=/tmp/x\nBACNET_PORT=47990\n"))
+    assert os.environ.get(name.upper()) == before.get(name.upper())
+    assert os.environ["BACNET_PORT"] == "47990"
+    assert f"ignoring {name.upper()}" in capsys.readouterr().err
 
 
-def test_an_explicit_env_file_can_enable_writes(clean_env, tmp_path, monkeypatch, capsys):
+def test_an_explicit_env_file_can_enable_writes_and_set_the_object_map(clean_env, tmp_path, capsys):
     env_file = tmp_path / "bacnet.env"
-    env_file.write_text("BACNET_WRITES_ENABLED=true\nBACNET_PORT=47993\n", encoding="utf-8")
-    monkeypatch.chdir(tmp_path)
+    env_file.write_text(
+        "BACNET_WRITES_ENABLED=true\nBACNET_PORT=47993\nOBJECT_MAP_FILE=/tmp/map.json\n",
+        encoding="utf-8",
+    )
     cli.load_environment(env_file)
     config = BACnetConfig.from_env()
     assert config.writes_enabled is True
     assert config.port == 47993
+    assert os.environ["OBJECT_MAP_FILE"] == "/tmp/map.json"
     assert capsys.readouterr().err == ""
 
 
@@ -77,28 +149,15 @@ def test_a_missing_env_file_is_a_config_error(clean_env, tmp_path):
         cli.load_environment(tmp_path / "nope.env")
 
 
-def test_the_process_environment_still_enables_writes(clean_env, tmp_path, monkeypatch):
-    (tmp_path / ".env").write_text("BACNET_WRITES_ENABLED=false\n", encoding="utf-8")
+def test_the_process_environment_still_enables_writes(clean_env, tmp_path):
     clean_env["BACNET_WRITES_ENABLED"] = "true"
-    monkeypatch.chdir(tmp_path)
-    cli.load_environment()
+    cli.load_environment(implicit_file=project(tmp_path, "BACNET_WRITES_ENABLED=false\n"))
     assert BACnetConfig.from_env().writes_enabled is True
 
 
-def test_dotenv_is_found_from_a_subdirectory(clean_env, tmp_path, monkeypatch):
-    (tmp_path / ".env").write_text("BACNET_PORT=47997\n", encoding="utf-8")
-    sub = tmp_path / "a" / "b"
-    sub.mkdir(parents=True)
-    monkeypatch.chdir(sub)
-    cli.load_environment()
-    assert BACnetConfig.from_env().port == 47997
-
-
-def test_process_environment_wins_over_dotenv(clean_env, tmp_path, monkeypatch):
-    (tmp_path / ".env").write_text("BACNET_PORT=47996\n", encoding="utf-8")
+def test_process_environment_wins_over_dotenv(clean_env, tmp_path):
     clean_env["BACNET_PORT"] = "47995"
-    monkeypatch.chdir(tmp_path)
-    cli.load_environment()
+    cli.load_environment(implicit_file=project(tmp_path, "BACNET_PORT=47996\n"))
     assert BACnetConfig.from_env().port == 47995
 
 

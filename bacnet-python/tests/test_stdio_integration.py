@@ -82,8 +82,19 @@ def stop(proc: subprocess.Popen) -> None:
 def mock_process() -> Iterator[str]:
     """Run the mock device; yield its address once it is listening."""
     port = free_udp_port()
+    # stdin is a pipe nobody writes to: if this test run is killed, the pipe
+    # closes and --exit-on-stdin-eof stops the mock, so it never outlives us.
     proc = subprocess.Popen(
-        [sys.executable, str(MOCK_SCRIPT), "--host", "127.0.0.1", "--port", str(port)],
+        [
+            sys.executable,
+            str(MOCK_SCRIPT),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--exit-on-stdin-eof",
+        ],
+        stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -104,12 +115,16 @@ def mock_process() -> Iterator[str]:
 
 
 def server_env(writes: bool) -> dict[str, str]:
+    # Every setting is given, so a developer's bacnet-python/.env (the only
+    # implicit one) cannot change the results: the process environment wins.
     return {
         "BACNET_INTERFACE": "127.0.0.1",
         "BACNET_PORT": str(free_udp_port()),
+        "BACNET_DEVICE_INSTANCE": "1234",
         "BACNET_WRITES_ENABLED": "true" if writes else "false",
         "BACNET_APDU_TIMEOUT_MS": "1000",
         "BACNET_APDU_RETRIES": "1",
+        "BACNET_LOG_LEVEL": "WARNING",
     }
 
 
@@ -294,10 +309,12 @@ def test_stdout_carries_only_json_rpc(tmp_path):
             tool_call(9, "ping", {}),
         ]
         env = isolated_env(
-            **server_env(writes=True),
-            BACNET_LOG_LEVEL="DEBUG",
-            OBJECT_MAP_FILE=str(tmp_path / "objects.json"),
-            PYTHONUNBUFFERED="1",
+            **{
+                **server_env(writes=True),
+                "BACNET_LOG_LEVEL": "DEBUG",
+                "OBJECT_MAP_FILE": str(tmp_path / "objects.json"),
+                "PYTHONUNBUFFERED": "1",
+            }
         )
         returncode, lines, responses, stderr = raw_session(SERVER_COMMAND, env, tmp_path, requests)
 
@@ -425,21 +442,17 @@ def test_startup_fails_cleanly_on_bad_configuration(tmp_path, settings, message)
     assert "Traceback" not in result.stderr
 
 
-def test_a_dotenv_in_the_working_directory_is_used(tmp_path):
-    (tmp_path / ".env").write_text("BACNET_PORT=not-a-port\n", encoding="utf-8")
+def test_a_dotenv_in_the_working_directory_is_not_read(tmp_path):
+    # If it were read, the server would try to bind 192.0.2.1 and exit.
+    (tmp_path / ".env").write_text("BACNET_INTERFACE=192.0.2.1/24\n", encoding="utf-8")
     env = server_env(writes=False)
-    del env["BACNET_PORT"]
-    result = subprocess.run(
-        SERVER_COMMAND,
-        input="",
-        capture_output=True,
-        text=True,
-        env=isolated_env(**env),
-        cwd=tmp_path,
-        timeout=60,
+    del env["BACNET_INTERFACE"]
+    returncode, _, responses, stderr = raw_session(
+        SERVER_COMMAND, isolated_env(**env), tmp_path, [tool_call(2, "ping", {})]
     )
-    assert result.returncode == 1
-    assert "BACNET_PORT must be an integer, got 'not-a-port'" in result.stderr
+    assert returncode == 0, stderr
+    connection = responses[2]["result"]["structuredContent"]["data"]["connection"]
+    assert connection["interface"] == "127.0.0.1/32"
 
 
 def ping_writes_enabled(cwd: Path, env: dict[str, str], extra_args: list[str]) -> tuple[bool, str]:
@@ -454,9 +467,8 @@ def test_a_dotenv_in_the_working_directory_cannot_enable_writes(tmp_path):
     (tmp_path / ".env").write_text("BACNET_WRITES_ENABLED=true\n", encoding="utf-8")
     env = server_env(writes=False)
     del env["BACNET_WRITES_ENABLED"]
-    enabled, stderr = ping_writes_enabled(tmp_path, env, [])
+    enabled, _ = ping_writes_enabled(tmp_path, env, [])
     assert enabled is False
-    assert "ignoring BACNET_WRITES_ENABLED" in stderr
 
 
 def test_an_explicit_env_file_can_enable_writes(tmp_path):
