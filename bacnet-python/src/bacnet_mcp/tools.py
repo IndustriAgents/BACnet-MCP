@@ -24,9 +24,12 @@ from mcp.types import ToolAnnotations
 from .bacnet_client import (
     MAX_DEVICE_INSTANCE,
     MAX_INSTANCE,
+    NOT_SENT,
+    UNKNOWN,
     BACnetClient,
     BACnetClientError,
     ConfigError,
+    WriteError,
 )
 
 log = logging.getLogger(__name__)
@@ -236,21 +239,40 @@ class ToolResources:
     object_map: ObjectMap
 
 
+def write_outcome(outcome: str, request_sent: bool) -> dict[str, Any]:
+    """The meta every write tool reports: written | rejected | unknown | not_sent."""
+    return {"outcome": outcome, "request_sent": request_sent}
+
+
 async def guarded(
     tool: str,
     action: Callable[[], Awaitable[Envelope]],
     meta: Mapping[str, Any] | None = None,
+    *,
+    write: bool = False,
 ) -> Envelope:
-    """Run a tool body, turning every failure into a success:false envelope."""
+    """Run a tool body, turning every failure into a success:false envelope.
+
+    For write tools the envelope also says whether the request went out. A
+    failure whose origin is unclear is reported as possibly sent.
+    """
+    base = {"tool": tool, **(meta or {})}
     try:
         return await action()
+    except WriteError as exc:
+        return fail(str(exc), {**base, **write_outcome(exc.outcome, exc.request_sent)})
     except (ArgumentError, BACnetClientError) as exc:
-        return fail(str(exc), {"tool": tool, **(meta or {})})
+        return fail(str(exc), {**base, **(write_outcome(NOT_SENT, False) if write else {})})
     except ErrorRejectAbortNack as exc:  # a BaseException in bacpypes3; never let it escape
-        return fail(f"BACnet failure: {exc}", {"tool": tool, **(meta or {})})
+        return fail(
+            f"BACnet failure: {exc}", {**base, **(write_outcome(UNKNOWN, True) if write else {})}
+        )
     except Exception as exc:  # noqa: BLE001 - the model gets an envelope, never a crash
         log.exception("%s failed", tool)
-        return fail(f"{type(exc).__name__}: {exc}", {"tool": tool, **(meta or {})})
+        return fail(
+            f"{type(exc).__name__}: {exc}",
+            {**base, **(write_outcome(UNKNOWN, True) if write else {})},
+        )
 
 
 def register_tools(server: FastMCP, resources: ToolResources) -> None:
@@ -271,7 +293,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         return fail(
             "Write operations are disabled by configuration: the server must be started "
             "with BACNET_WRITES_ENABLED=true to write to devices.",
-            {"tool": tool},
+            {"tool": tool, **write_outcome(NOT_SENT, False)},
         )
 
     async def do_read(target: dict[str, Any]) -> Envelope:
@@ -454,7 +476,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
                 raise ArgumentError("a null value relinquishes a priority slot: give a priority")
             return await do_write(target, new_value, prio)
 
-        return await guarded("write_property", action, meta)
+        return await guarded("write_property", action, meta, write=True)
 
     @register(LOCAL_ONLY)
     async def list_objects() -> Envelope:
@@ -528,7 +550,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
             result["data"]["alias"] = name
             return result
 
-        return await guarded("write_object_by_alias", action, {"alias": alias})
+        return await guarded("write_object_by_alias", action, {"alias": alias}, write=True)
 
     @register(LOCAL_ONLY)
     async def ping() -> Envelope:

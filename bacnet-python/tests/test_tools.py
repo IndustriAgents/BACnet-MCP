@@ -13,7 +13,7 @@ from bacpypes3.primitivedata import Real
 from helpers import MOCK_DEVICE_ID, client_config, mock_address, mock_object, running_mock
 from mcp.shared.memory import create_connected_server_and_client_session
 
-from bacnet_mcp.bacnet_client import BACnetClient, BACnetClientError, BACnetConfig
+from bacnet_mcp.bacnet_client import BACnetClient, BACnetClientError, BACnetConfig, WriteError
 from bacnet_mcp.server import BACnetMCPServer
 from bacnet_mcp.tools import ToolConfig
 
@@ -103,7 +103,12 @@ class FakeClient:
             array_index=array_index,
             address=address,
         )
-        return {"address": address or "127.0.0.1:47809", "priority": priority}
+        return {
+            "address": address or "127.0.0.1:47809",
+            "priority": priority,
+            "outcome": "written",
+            "request_sent": True,
+        }
 
     def connection_status(self) -> dict[str, Any]:
         return {"running": self.opened, "writes_enabled": self.config.writes_enabled}
@@ -174,6 +179,7 @@ def test_writes_are_refused_by_default(tool, arguments):
     envelope = with_session(make_server(client), scenario)
     assert envelope["success"] is False
     assert "BACNET_WRITES_ENABLED=true" in envelope["error"]
+    assert (envelope["meta"]["outcome"], envelope["meta"]["request_sent"]) == ("not_sent", False)
     assert client.calls == []
 
 
@@ -217,6 +223,11 @@ def test_bad_arguments_come_back_as_envelopes(tool, arguments, message):
     assert envelope["success"] is False
     assert message in envelope["error"]
     assert envelope["meta"]["tool"] == tool
+    if tool.startswith("write"):
+        assert envelope["meta"]["outcome"] == "not_sent"
+        assert envelope["meta"]["request_sent"] is False
+    else:
+        assert "outcome" not in envelope["meta"]
     assert client.calls == []
 
 
@@ -236,6 +247,7 @@ def test_valid_calls_reach_the_client():
     assert read["success"] and read["data"]["value"] == 21.5
     assert read["data"]["property_id"] == "units"
     assert write["success"] and write["data"]["acknowledged"] is True
+    assert (write["meta"]["outcome"], write["meta"]["request_sent"]) == ("written", True)
     assert relinquish["success"] and relinquish["data"]["value"] is None
     assert found["data"]["devices"][0]["device_id"] == 1
     assert [name for name, _ in client.calls] == ["read", "write", "write", "discover"]
@@ -523,3 +535,87 @@ def test_non_finite_values_survive_strict_json():
     envelope = asyncio.run(main())
     assert envelope["success"] is True
     assert envelope["data"]["value"] == "Infinity"
+
+
+@pytest.mark.parametrize(
+    ("error", "outcome", "sent"),
+    [
+        (
+            WriteError("BACnet error: property: write-access-denied", "rejected", True),
+            "rejected",
+            True,
+        ),
+        (WriteError("no reply: the write may have been applied", "unknown", True), "unknown", True),
+        (BACnetClientError("no device 1 answered"), "not_sent", False),
+        (RuntimeError("boom"), "unknown", True),
+        (AbortPDU(reason="noResponse"), "unknown", True),
+    ],
+)
+def test_write_failures_report_the_outcome(error, outcome, sent):
+    client = FakeClient(writes_enabled=True, error=error)
+
+    async def scenario(session):
+        return await call(session, "write_property", {**WRITE, "priority": 8})
+
+    envelope = with_session(make_server(client), scenario)
+    assert envelope["success"] is False
+    assert (envelope["meta"]["outcome"], envelope["meta"]["request_sent"]) == (outcome, sent)
+
+
+def test_unknown_arguments_to_a_write_say_nothing_was_sent():
+    async def scenario(session):
+        return await call(session, "write_object_by_alias", {"alias": "x", "value": 1, "p": 8})
+
+    envelope = with_session(make_server(FakeClient(writes_enabled=True)), scenario)
+    assert envelope["success"] is False
+    assert (envelope["meta"]["outcome"], envelope["meta"]["request_sent"]) == ("not_sent", False)
+
+
+def test_a_lost_ack_through_the_tool_is_unknown_and_sent_once():
+    async def main():
+        async with running_mock() as mock:
+            server = BACnetMCPServer(
+                client=BACnetClient(client_config(apdu_retries=3)), tool_config=ToolConfig()
+            )
+            writes = []
+            original = mock.app.do_WritePropertyRequest
+
+            async def counting(apdu):
+                writes.append(apdu)
+                await original(apdu)
+
+            mock.app.do_WritePropertyRequest = counting
+            async with create_connected_server_and_client_session(server.mcp) as session:
+                await call(
+                    session,
+                    "read_property",
+                    {
+                        "device_id": MOCK_DEVICE_ID,
+                        "object_type": "analog-input",
+                        "object_instance": 1,
+                        "address": mock_address(mock),
+                    },
+                )
+                for link_layer in mock.app.link_layers.values():
+                    link_layer.server.local_transport.sendto = lambda data, addr=None: None
+                envelope = await call(
+                    session,
+                    "write_property",
+                    {
+                        "device_id": MOCK_DEVICE_ID,
+                        "object_type": "analog-output",
+                        "object_instance": 1,
+                        "property_id": "present-value",
+                        "value": 21,
+                        "priority": 8,
+                    },
+                )
+            return envelope, len(writes), float(mock_object(mock, "analog-output", 1).presentValue)
+
+    envelope, count, value = asyncio.run(main())
+    assert envelope["success"] is False
+    assert envelope["meta"]["outcome"] == "unknown"
+    assert envelope["meta"]["request_sent"] is True
+    assert "the write may have been applied; read it back before retrying" in envelope["error"]
+    assert count == 1
+    assert value == 21.0

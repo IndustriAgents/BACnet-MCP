@@ -15,13 +15,21 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.stdio import stdio_server
 from pydantic import ValidationError
 
-from .bacnet_client import BACnetClient
-from .tools import ObjectMap, ToolConfig, ToolResources, fail, register_tools
+from .bacnet_client import NOT_SENT, BACnetClient
+from .tools import ObjectMap, ToolConfig, ToolResources, fail, register_tools, write_outcome
 
 
 @dataclass(slots=True)
 class AppContext:
     client: BACnetClient
+
+
+def _refusal_meta(tool: Any) -> dict[str, Any]:
+    """Meta for arguments refused before the tool ran; writes say nothing was sent."""
+    meta: dict[str, Any] = {"tool": tool.name}
+    if tool.annotations is not None and tool.annotations.destructiveHint:
+        meta.update(write_outcome(NOT_SENT, False))
+    return meta
 
 
 def describe_validation_error(exc: ValidationError) -> str:
@@ -55,7 +63,7 @@ class _BACnetFastMCP(FastMCP):
                 result = fail(
                     f"Unknown argument(s): {', '.join(unknown)}; "
                     f"{name} takes {', '.join(sorted(known)) or 'no arguments'}",
-                    {"tool": name},
+                    _refusal_meta(tool),
                 )
                 return tool.fn_metadata.convert_result(result)
         try:
@@ -64,7 +72,7 @@ class _BACnetFastMCP(FastMCP):
             tool = self._tool_manager.get_tool(name)
             if tool is None or not isinstance(exc.__cause__, ValidationError):
                 raise
-            result = fail(describe_validation_error(exc.__cause__), {"tool": name})
+            result = fail(describe_validation_error(exc.__cause__), _refusal_meta(tool))
             return tool.fn_metadata.convert_result(result)
 
     async def run_stdio_async(self) -> None:

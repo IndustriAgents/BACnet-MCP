@@ -28,7 +28,7 @@ from helpers import (
     running_mock,
 )
 
-from bacnet_mcp.bacnet_client import BACnetClient, BACnetClientError, BACnetConfig
+from bacnet_mcp.bacnet_client import BACnetClient, BACnetClientError, BACnetConfig, WriteError
 
 
 def run(coro):
@@ -500,3 +500,111 @@ def test_peers_can_read_the_servers_wildcard_device_instance():
             assert (str(identifier[0]), identifier[1]) == ("device", 4321)
 
     run(scenario())
+
+
+def count_requests(mock, handler_name: str) -> list[int]:
+    """Count the requests the mock processes with ``handler_name``."""
+    seen: list[int] = []
+    original = getattr(mock.app, handler_name)
+
+    async def counting(apdu):
+        seen.append(apdu.apduInvokeID)
+        await original(apdu)
+
+    setattr(mock.app, handler_name, counting)
+    return seen
+
+
+def drop_replies(mock) -> None:
+    """The mock still processes every request, but its replies are lost."""
+    for link_layer in mock.app.link_layers.values():
+        link_layer.server.local_transport.sendto = lambda data, addr=None: None
+
+
+def test_a_lost_ack_never_causes_a_second_write():
+    """The device applies the write, its SimpleAck is lost: it must see ONE write.
+
+    bacpypes3 retransmits a confirmed request with no answer (apdu_retries
+    times, same invoke ID) and the device applies every copy.
+    """
+
+    async def scenario():
+        async with running_mock() as mock, running_client(apdu_retries=3) as client:
+            addr = mock_address(mock)
+            await client.read_property(MOCK_DEVICE_ID, "analog-input", 1, address=addr)
+            writes = count_requests(mock, "do_WritePropertyRequest")
+            drop_replies(mock)
+            with pytest.raises(WriteError) as caught:
+                await client.write_property(
+                    MOCK_DEVICE_ID, "analog-output", 1, "present-value", 30.0, 8
+                )
+            assert len(writes) == 1
+            assert float(mock_object(mock, "analog-output", 1).presentValue) == 30.0
+            return caught.value
+
+    error = run(scenario())
+    assert error.outcome == "unknown"
+    assert error.request_sent is True
+    assert "the write may have been applied; read it back before retrying" in str(error)
+
+
+def test_reads_are_still_retried():
+    async def scenario():
+        async with running_mock() as mock, running_client(apdu_retries=3) as client:
+            addr = mock_address(mock)
+            await client.read_property(MOCK_DEVICE_ID, "analog-input", 1, address=addr)
+            reads = count_requests(mock, "do_ReadPropertyRequest")
+            drop_replies(mock)
+            with pytest.raises(BACnetClientError, match="no-response"):
+                await client.read_property(MOCK_DEVICE_ID, "analog-input", 1)
+            assert len(reads) == 4
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "outcome", "sent"),
+    [
+        ({"object_type": "analog-input", "value": 1.0}, "rejected", True),  # write-access-denied
+        ({"object_type": "analog-output", "instance": 9, "value": 1.0}, "rejected", True),
+        ({"object_type": "analog-output", "value": "abc"}, "not_sent", False),
+        ({"object_type": "bogus-type", "value": 1.0}, "not_sent", False),
+        ({"object_type": "analog-output", "value": 1.0, "device_id": 999}, "not_sent", False),
+        ({"object_type": "analog-output", "value": 1.0, "writes": False}, "not_sent", False),
+    ],
+)
+def test_every_failed_write_says_whether_it_was_sent(kwargs, outcome, sent):
+    async def scenario():
+        writes = kwargs.get("writes", True)
+        async with running_mock() as mock, running_client(writes_enabled=writes) as client:
+            with pytest.raises(WriteError) as caught:
+                await client.write_property(
+                    kwargs.get("device_id", MOCK_DEVICE_ID),
+                    kwargs["object_type"],
+                    kwargs.get("instance", 1),
+                    "present-value",
+                    kwargs["value"],
+                    8,
+                    address=mock_address(mock),
+                )
+            return caught.value
+
+    error = run(scenario())
+    assert (error.outcome, error.request_sent) == (outcome, sent)
+
+
+def test_a_successful_write_reports_written():
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            return await client.write_property(
+                MOCK_DEVICE_ID,
+                "analog-output",
+                1,
+                "present-value",
+                12.0,
+                8,
+                address=mock_address(mock),
+            )
+
+    meta = run(scenario())
+    assert (meta["outcome"], meta["request_sent"]) == ("written", True)

@@ -30,6 +30,7 @@ from bacpypes3.apdu import (
     WritePropertyRequest,
 )
 from bacpypes3.app import Application
+from bacpypes3.appservice import ApplicationServiceAccessPoint
 from bacpypes3.constructeddata import Any as AnyValue
 from bacpypes3.constructeddata import AnyAtomic, Array, Choice, Sequence
 from bacpypes3.errors import PropertyError
@@ -79,6 +80,21 @@ class ConfigError(ValueError):
 
 class BACnetClientError(RuntimeError):
     """Raised when a BACnet operation fails; the message is shown to the model."""
+
+
+# What happened to a write: the device acknowledged it, the device refused it,
+# nobody knows (the request may have been applied), or it never went out.
+WRITTEN, REJECTED, UNKNOWN, NOT_SENT = "written", "rejected", "unknown", "not_sent"
+MAY_HAVE_BEEN_APPLIED = "the write may have been applied; read it back before retrying"
+
+
+class WriteError(BACnetClientError):
+    """A write that failed, with what is known about whether it was applied."""
+
+    def __init__(self, message: str, outcome: str, request_sent: bool) -> None:
+        super().__init__(message)
+        self.outcome = outcome
+        self.request_sent = request_sent
 
 
 def env_bool(environ: Mapping[str, str], name: str, default: bool) -> bool:
@@ -203,6 +219,68 @@ class ServerDeviceObject(_ReadOnly, DeviceObject):
 
 class ServerNetworkPortObject(_ReadOnly, NetworkPortObject):
     pass
+
+
+# Confirmed services that change a device. bacpypes3 retransmits a confirmed
+# request that gets no answer (numberOfApduRetries times, with the same
+# invoke ID), and a device that applied the first copy but whose ack was lost
+# applies every copy. These are sent exactly once.
+DEVICE_CHANGING_SERVICES = frozenset(
+    {
+        7,  # atomicWriteFile
+        8,  # addListElement
+        9,  # removeListElement
+        10,  # createObject
+        11,  # deleteObject
+        15,  # writeProperty
+        16,  # writePropertyMultiple
+        17,  # deviceCommunicationControl
+        20,  # reinitializeDevice
+    }
+)
+
+
+class _Transactions(list):
+    """bacpypes3's client transaction list, which sees each new ClientSSM.
+
+    ``ApplicationServiceAccessPoint.sap_indication`` creates the ClientSSM
+    (copying the device object's retry count) and appends it here with no
+    ``await`` in between, so the flag set just before is always this
+    request's.
+    """
+
+    def __init__(self, sap: _SendOnceASAP, items=()) -> None:
+        super().__init__(items)
+        self.sap = sap
+
+    def append(self, transaction) -> None:
+        if self.sap.send_next_once:
+            transaction.numberOfApduRetries = 0
+            self.sap.send_next_once = False
+        super().append(transaction)
+
+
+class _SendOnceASAP(ApplicationServiceAccessPoint):
+    """Sends device-changing confirmed requests without retransmissions."""
+
+    send_next_once = False
+
+    async def sap_indication(self, apdu) -> None:
+        self.send_next_once = (
+            getattr(apdu, "apduType", None) == 0
+            and getattr(apdu, "apduService", None) in DEVICE_CHANGING_SERVICES
+        )
+        try:
+            await super().sap_indication(apdu)
+        finally:
+            self.send_next_once = False
+
+
+def send_writes_once(app: Application) -> None:
+    """Make ``app`` send device-changing requests at most once."""
+    asap = app.asap
+    asap.__class__ = _SendOnceASAP
+    asap.clientTransactions = _Transactions(asap, asap.clientTransactions)
 
 
 class ServerApplication(Application):
@@ -340,6 +418,7 @@ class BACnetClient:
             objectName="NetworkPort-1",
         )
         app = ServerApplication.from_object_list([device, network_port])
+        send_writes_once(app)
         pending = self._transport_tasks(app)
         if pending:
             _, not_done = await asyncio.wait(pending, timeout=5)
@@ -745,14 +824,76 @@ class BACnetClient:
         array_index: int | None = None,
         address: str | None = None,
     ) -> dict[str, Any]:
-        """WriteProperty; succeeds only when the device answers with SimpleAck."""
+        """WriteProperty, sent at most once; succeeds only on a SimpleAck.
+
+        Every failure is a :class:`WriteError` that says whether the request
+        went out and what is known about the result. A request that got no
+        answer is never sent again: the device may have applied it.
+        """
         if not self.config.writes_enabled:
-            raise BACnetClientError(
-                "Write operations are disabled by configuration (set BACNET_WRITES_ENABLED=true)"
+            raise WriteError(
+                "Write operations are disabled by configuration (set BACNET_WRITES_ENABLED=true)",
+                NOT_SENT,
+                False,
             )
-        app = self._require_app()
-        start = time.perf_counter()
-        addr = await self._resolve(device_id, address)
+        try:
+            app = self._require_app()
+            start = time.perf_counter()
+            addr = await self._resolve(device_id, address)
+            request = await self._write_request(
+                app, addr, object_type, object_instance, property_id, value, priority, array_index
+            )
+        except WriteError:
+            raise
+        except BACnetClientError as exc:
+            raise WriteError(str(exc), NOT_SENT, False) from None
+
+        # From here on the request may have reached the device.
+        mark = time.monotonic()
+        try:
+            response = await app.request(request)
+        except ErrorRejectAbortNack as exc:
+            message = describe_bacnet_error(exc)
+            if isinstance(exc, ErrorPDU | RejectPDU) or getattr(exc, "apduSrv", False):
+                raise WriteError(message, REJECTED, True) from None
+            # no-response, or an abort raised on our side after sending
+            if str(exc.apduAbortRejectReason) == "no-response":
+                self._addresses.pop(device_id, None)
+            raise WriteError(
+                f"{message}{self._send_failure(mark)}: {MAY_HAVE_BEEN_APPLIED}", UNKNOWN, True
+            ) from None
+        except Exception as exc:  # noqa: BLE001 - after sending, the result is unknown
+            raise WriteError(
+                f"{type(exc).__name__}: {exc}: {MAY_HAVE_BEEN_APPLIED}", UNKNOWN, True
+            ) from exc
+        if not isinstance(response, SimpleAckPDU):
+            raise WriteError(
+                f"unexpected reply to WriteProperty ({type(response).__name__}): "
+                f"{MAY_HAVE_BEEN_APPLIED}",
+                UNKNOWN,
+                True,
+            )
+        return {
+            "duration_ms": round((time.perf_counter() - start) * 1000.0, 3),
+            "device_id": device_id,
+            "address": str(addr),
+            "priority": priority,
+            "outcome": WRITTEN,
+            "request_sent": True,
+        }
+
+    async def _write_request(
+        self,
+        app: Application,
+        addr: Address,
+        object_type: str,
+        object_instance: int,
+        property_id: str,
+        value: Any,
+        priority: int | None,
+        array_index: int | None,
+    ) -> WritePropertyRequest:
+        """Build (and check) a WriteProperty request; nothing is sent."""
         vendor_info, objid, prop, array_index = await self._references(
             app, addr, object_type, object_instance, property_id, array_index
         )
@@ -792,17 +933,7 @@ class BACnetClient:
             request.propertyArrayIndex = array_index
         if priority is not None:
             request.priority = priority
-        response = await self._request(app, request, device_id)
-        if not isinstance(response, SimpleAckPDU):
-            raise BACnetClientError(
-                f"the device did not acknowledge the write ({type(response).__name__})"
-            )
-        return {
-            "duration_ms": round((time.perf_counter() - start) * 1000.0, 3),
-            "device_id": device_id,
-            "address": str(addr),
-            "priority": priority,
-        }
+        return request
 
     def connection_status(self) -> dict[str, Any]:
         return {
