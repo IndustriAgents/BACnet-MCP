@@ -549,6 +549,9 @@ class BACnetClient:
                     raise BACnetClientError(
                         f"the device at {address} is device {found[1]}, not {device_id}"
                     )
+                # Not awaited: if the I-Am comes back (unicast), bacpypes3 learns
+                # the vendor id it needs for vendor-specific object types.
+                app.who_is(device_id, device_id, addr, timeout=self._resolve_timeout)
                 return
         i_ams = await app.who_is(device_id, device_id, addr, timeout=self._resolve_timeout)
         if not i_ams:
