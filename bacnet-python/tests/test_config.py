@@ -51,6 +51,22 @@ def test_the_implicit_dotenv_is_the_projects_not_the_working_directorys():
     assert cli.project_env_file(installed) is None
 
 
+@pytest.mark.parametrize("packages", ["site-packages", "dist-packages"])
+def test_no_implicit_dotenv_inside_an_installation_even_with_a_src_layout(tmp_path, packages):
+    """A src/ layout with a pyproject.toml, but inside site-packages: not a checkout."""
+    project = tmp_path / "lib" / packages / "someproject"
+    (project / "src" / "bacnet_mcp").mkdir(parents=True)
+    (project / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    module = project / "src" / "bacnet_mcp" / "cli.py"
+    module.write_text("", encoding="utf-8")
+    assert cli.project_env_file(module) is None
+    # The same layout outside an installation is a checkout.
+    checkout = tmp_path / "checkout"
+    (checkout / "src" / "bacnet_mcp").mkdir(parents=True)
+    (checkout / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    assert cli.project_env_file(checkout / "src" / "bacnet_mcp" / "cli.py") == checkout / ".env"
+
+
 @pytest.mark.parametrize("where", ["cwd", "parent"])
 def test_a_dotenv_in_the_working_directory_or_a_parent_is_not_read(
     clean_env, tmp_path, monkeypatch, where
