@@ -14,7 +14,7 @@ import time
 from functools import partial
 
 import pytest
-from bacpypes3.apdu import ErrorRejectAbortNack
+from bacpypes3.apdu import ErrorRejectAbortNack, ReadPropertyACK
 from bacpypes3.app import Application
 from bacpypes3.local.device import DeviceObject
 from bacpypes3.local.networkport import NetworkPortObject
@@ -608,3 +608,26 @@ def test_a_successful_write_reports_written():
 
     meta = run(scenario())
     assert (meta["outcome"], meta["request_sent"]) == ("written", True)
+
+
+def test_an_unexpected_reply_to_a_write_is_not_success():
+    """Only a SimpleAck means "written"; anything else may or may not have applied."""
+
+    async def scenario():
+        async with running_mock() as mock, running_client() as client:
+            addr = mock_address(mock)
+            await client.read_property(MOCK_DEVICE_ID, "analog-input", 1, address=addr)
+
+            async def odd_reply(request):
+                return ReadPropertyACK()
+
+            client._app.request = odd_reply
+            with pytest.raises(WriteError) as caught:
+                await client.write_property(
+                    MOCK_DEVICE_ID, "analog-output", 1, "present-value", 1.0, 8
+                )
+            return caught.value
+
+    error = run(scenario())
+    assert (error.outcome, error.request_sent) == ("unknown", True)
+    assert "unexpected reply" in str(error)

@@ -673,3 +673,16 @@ def test_server_info_reports_this_packages_version():
     assert result.serverInfo.name == "BACnet MCP Server"
     assert result.serverInfo.version == version("bacnet-mcp")
     assert result.serverInfo.version != version("mcp")
+
+
+def test_object_map_aliases_reject_booleans(tmp_path):
+    client = FakeClient()
+    entry = {"device": True, "object_type": "analog-input", "object_instance": 1}
+    server = make_server(client, write_map(tmp_path, {"flag": entry}))
+
+    async def scenario(session):
+        return await call(session, "read_object_by_alias", {"alias": "flag"})
+
+    envelope = with_session(server, scenario)
+    assert envelope["success"] is False and "device_id must be an integer" in envelope["error"]
+    assert client.calls == []
