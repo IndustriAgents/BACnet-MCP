@@ -13,9 +13,9 @@ concurrency:
 permissions:
   contents: read
 
-# Cheap, deterministic checks only: nothing here opens a BACnet/IP socket or
-# needs a device. Both uv projects commit their uv.lock, so every step runs
-# with --locked and fails if pyproject.toml and the lockfile have drifted.
+# No device and no network: the tests bind BACnet/IP (UDP) on free 127.0.0.1
+# ports only. Both uv projects commit their uv.lock, so every step runs with
+# --locked and fails if pyproject.toml and the lockfile have drifted.
 jobs:
   server:
     name: bacnet-python (MCP server)
@@ -36,34 +36,18 @@ jobs:
       - name: Byte-compile sources
         run: uv run --locked python -m compileall -q src
 
-      # Builds the FastMCP server and lists its tools in-process. This does not
-      # run the lifespan, so the BACnet/IP stack is never started and no UDP
-      # port is bound. (`bacnet-mcp` itself has no --help: it starts the stdio
-      # server at once.)
-      - name: Import the package and list registered tools
-        run: |
-          uv run --locked python - <<'EOF'
-          import asyncio
+      - name: Lint
+        run: uv run --locked ruff check .
 
-          from bacnet_mcp.cli import main  # noqa: F401  (console entry point imports)
-          from bacnet_mcp.server import BACnetMCPServer
+      - name: Check formatting
+        run: uv run --locked ruff format --check .
 
-          tools = asyncio.run(BACnetMCPServer()._server.list_tools())
-          names = sorted(t.name for t in tools)
-          print(f"{len(names)} tools: {', '.join(names)}")
-          # The exact set, so a dropped or renamed tool fails CI. Keep this in
-          # step with the tool table in README.md.
-          expected = [
-              "discover_devices",
-              "list_objects",
-              "ping",
-              "read_object_by_alias",
-              "read_property",
-              "write_object_by_alias",
-              "write_property",
-          ]
-          assert names == expected, names
-          EOF
+      # Unit tests, the tool layer through an in-memory MCP session, and an
+      # end-to-end run: the mock device (../bacnet-mock-device) and the real
+      # server over stdio, driven with the mcp client SDK. The test suite also
+      # checks the exact set of registered tools.
+      - name: Tests
+        run: uv run --locked pytest -v
 
   mock:
     name: bacnet-mock-device

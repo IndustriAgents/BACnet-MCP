@@ -51,7 +51,9 @@ VENDOR_IDENTIFIER = 999  # bacpypes3's default for applications without their ow
 
 _IP_PORT = r"\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?"
 # ip[:port], or network:station where the station is ip[:port], 0x-hex or decimal
-_STATION_RE = re.compile(rf"^(?:{_IP_PORT}|\d{{1,5}}:(?:{_IP_PORT}|0x[0-9a-fA-F]{{1,14}}|\d{{1,3}}))$")
+_STATION_RE = re.compile(
+    rf"^(?:{_IP_PORT}|\d{{1,5}}:(?:{_IP_PORT}|0x[0-9a-fA-F]{{1,14}}|\d{{1,3}}))$"
+)
 # * (local broadcast), *:* (global broadcast), network:* (remote broadcast)
 _BROADCAST_RE = re.compile(r"^(?:\*|\*:\*|\d{1,5}:\*)$")
 _ADDRESS_HELP = (
