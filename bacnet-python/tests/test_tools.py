@@ -435,3 +435,13 @@ def test_tools_against_the_mock_in_process():
     assert read["data"]["value"] == pytest.approx(68.0)
     assert write["success"] is True and written == 12.0
     assert denied["success"] is False and "write-access-denied" in denied["error"]
+
+
+def test_descriptions_are_dedented():
+    async def scenario(session):
+        return (await session.list_tools()).tools
+
+    for tool in with_session(make_server(), scenario):
+        assert tool.description == tool.description.strip()
+        body = [line for line in tool.description.splitlines()[1:] if line.strip()]
+        assert min(len(line) - len(line.lstrip()) for line in body) == 0, tool.name
