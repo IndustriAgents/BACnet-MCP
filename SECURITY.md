@@ -16,8 +16,9 @@ The server also *joins* that network: on startup it runs a bacpypes3 BACnet/IP
 stack that binds UDP `BACNET_PORT` (default `47808`) on `BACNET_INTERFACE`
 (default `127.0.0.1`) and presents itself as a BACnet device (instance
 `BACNET_DEVICE_INSTANCE`, default `1234`). It does not announce itself, but
-it answers Who-Is and ReadProperty for its own device object like any other
-device; it refuses WriteProperty to its own objects.
+like any bacpypes3 device it answers requests about its own device and
+network-port objects: Who-Is, Who-Has, ReadProperty, ReadPropertyMultiple,
+ReadRange and COV subscriptions. It refuses every write to its own objects.
 
 So treat it as equipment on the building automation network, not as an
 application on the office network.

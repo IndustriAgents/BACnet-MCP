@@ -40,8 +40,10 @@ refuses to start if its UDP port is already bound.
 | `binary-value,1` | Fan Enable | `active`, commandable (priority array, relinquish default `active`) | `present-value` |
 
 The objects carry the usual standard properties (`object-name`, `description`,
-`units`, `status-flags`, `priority-array`, `property-list`, …). The device
-behaves like a real controller when a request is wrong:
+`units`, `status-flags`, `priority-array`, `property-list`, …), and a
+ReadProperty of `device,4194303` (the wildcard instance) reads the mock's own
+device object. The device behaves like a real controller when a request is
+wrong:
 
 - an object that does not exist → `object: unknown-object` (a write never
   creates one);
@@ -57,11 +59,12 @@ call `discover_devices` with `"address": "127.0.0.1:47809"` (a directed
 Who-Is), then `read_property` with `"device_id": 12345`. `write_property`
 also needs the server started with `BACNET_WRITES_ENABLED=true`.
 
-Or with bacpypes3's own console, from this directory (the console binds UDP
-47808 on 127.0.0.1):
+Or with bacpypes3's own console, from this directory. Give it a port of its
+own (47810 here): 47808 is the MCP server's default, and bacpypes3 would
+silently share a port that is already in use.
 
 ```bash
-uv run python -m bacpypes3 --address 127.0.0.1:47808
+uv run python -m bacpypes3 --address 127.0.0.1:47810
 > whois 127.0.0.1:47809
 > read 127.0.0.1:47809 analog-input,1 present-value
 > write 127.0.0.1:47809 analog-output,1 present-value 30.0 8

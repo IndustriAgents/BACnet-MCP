@@ -19,13 +19,18 @@ Early, but real: the tools speak BACnet/IP. What works today:
   directed at one address) and returns the devices that answer with I-Am,
   plus each device's name, vendor and model read from its device object.
 - **Reads**: `read_property` / `read_object_by_alias` send ReadProperty and
-  return the decoded value (numbers, strings, enumeration names, lists).
+  return the decoded value (numbers, strings, enumeration names, lists; a
+  REAL that is NaN or infinite comes back as `"NaN"`, `"Infinity"` or
+  `"-Infinity"`). When you give an `address`, the device there is first
+  checked to really be `device_id`.
 - **Writes**: `write_property` / `write_object_by_alias` send WriteProperty
   (with an optional priority, or `null` to relinquish a priority slot) and
   report success only when the device acknowledges. They are **off by
   default** and refuse to act unless `BACNET_WRITES_ENABLED=true`.
-- Every failure — a BACnet error, reject or abort, a timeout, a bad argument
-  or setting — comes back as `success: false` with a readable `error`.
+- Every failure — a BACnet error, reject or abort, a timeout, a datagram the
+  OS refused to send, a bad or unknown argument — comes back as
+  `success: false` with a readable `error`. Bad settings stop the server at
+  startup.
 - CI runs the server against the mock over BACnet/IP on the runner's loopback
   interface, through a real MCP stdio session.
 
@@ -40,13 +45,19 @@ Known limitations:
   schedules, trend logs, alarms/events or file access yet.
 - BACnet/IP on IPv4 only, as a normal device on the local subnet: no foreign
   device registration with a BBMD, no BACnet/SC, no IPv6. Devices behind a
-  BACnet router are addressed as `network:station` (e.g. `2:5`), but routed
-  access has not been tested.
+  BACnet router (`network:station` addresses such as `2:5`) are not
+  supported as targets.
 - A global Who-Is needs a broadcast address, which comes from the prefix
   length in `BACNET_INTERFACE` (e.g. `192.168.1.10/24`). With the default
   `127.0.0.1` there is none, so discovery and reads need the device's
-  `address`. On macOS the loopback interface has no broadcast address at all,
-  so `127.0.0.1/8` and the like are rejected at startup.
+  `address`, and a server bound to loopback cannot reach other hosts. On
+  macOS the loopback interface has no broadcast address at all, so
+  `127.0.0.1/8` and the like are rejected at startup.
+- Without a broadcast address the server receives only unicast replies.
+  Many devices answer Who-Is with a *broadcast* I-Am, so a directed
+  `discover_devices` may not see them; reading them by `address` still
+  works, because their identity is checked with a ReadProperty (whose reply
+  is unicast).
 - Writes have no confirmation step beyond the `BACNET_WRITES_ENABLED` switch:
   when it is on, the model can write any writable property.
 
@@ -140,18 +151,20 @@ config) or in a `.env` file.
 | `BACNET_INTERFACE` | `127.0.0.1` | IPv4 address to bind, optionally with a prefix length (`192.168.1.10/24`); the prefix sets the broadcast address used for global Who-Is |
 | `BACNET_PORT` | `47808` | Local BACnet/IP UDP port |
 | `BACNET_DEVICE_INSTANCE` | `1234` | Device instance the server presents on the network (pick one no real device uses) |
-| `BACNET_WRITES_ENABLED` | `false` | `true` allows the write tools; otherwise they refuse every write |
+| `BACNET_WRITES_ENABLED` | `false` | `true` (or `1`, `yes`, `on`) allows the write tools; otherwise they refuse every write. Anything other than these or `false`/`0`/`no`/`off` is an error |
 | `BACNET_APDU_TIMEOUT_MS` | `3000` | How long to wait for a device's answer before retrying (100–60000) |
 | `BACNET_APDU_RETRIES` | `3` | Retries after a timeout (0–10) |
-| `BACNET_LOG_LEVEL` | `WARNING` | Log level; logs always go to stderr |
+| `BACNET_LOG_LEVEL` | `WARNING` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`; logs always go to stderr |
 | `OBJECT_MAP_FILE` | unset | JSON file of aliases for the `*_by_alias` tools |
 
 `bacnet-mcp` loads a `.env` file from its working directory (or the nearest
 parent that has one) before it reads any of these. Values already set in the
 process environment win over the file. An invalid value (say
-`BACNET_WRITES_ENABLED=maybe`), a UDP port that is already in use, or a
-broadcast address that cannot be bound stops the server at startup with a
-message on stderr.
+`BACNET_WRITES_ENABLED=maybe`), an object map that cannot be read or parsed,
+a UDP port that is already in use, or a broadcast address that cannot be
+bound stops the server at startup with a message on stderr. The object map
+is re-read when the file changes; a problem then is reported by the alias
+tools.
 
 An object map is a JSON object keyed by alias. `device`, `object_type` and
 `object_instance` are required; `address`, `property_id` (default
@@ -170,14 +183,15 @@ An object map is a JSON object keyed by alias. `device`, `object_type` and
 |------|--------------|
 | `discover_devices` | Who-Is (broadcast, or to `address`), optional `low_limit`/`high_limit`, waits `timeout_ms`; returns each device's instance, address, vendor id, name, vendor and model |
 | `read_property` | ReadProperty of `device_id` / `object_type` / `object_instance` / `property_id` (default `present-value`), optional `array_index` and `address` |
-| `write_property` | WriteProperty of `value` with optional `priority` (1–16; `null` relinquishes); refused unless `BACNET_WRITES_ENABLED=true` |
+| `write_property` | WriteProperty of `value` with optional `priority` (1–16; `null`, or the string `"null"`, relinquishes); refused unless `BACNET_WRITES_ENABLED=true` |
 | `list_objects` | Lists the aliases loaded from `OBJECT_MAP_FILE` |
 | `read_object_by_alias` | `read_property` for an alias from the object map |
 | `write_object_by_alias` | `write_property` for an alias, at the alias's priority; refused unless writes are enabled |
 | `ping` | Reports the BACnet/IP settings, the write switch, known device addresses and the object map status; sends nothing |
 
 Every tool returns `{ "success": bool, "data": ..., "error": str | null, "meta": {...} }`,
-including for invalid arguments.
+including for invalid arguments. An argument a tool does not take (say a
+misspelt `priorty`) is an error, not silently ignored.
 
 ## Layout
 

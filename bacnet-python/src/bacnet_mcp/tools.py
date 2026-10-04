@@ -335,8 +335,8 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
         Args:
             timeout_ms: How long to wait for I-Am answers (100-60000 ms).
-            address: Optional target address: "ip", "ip:port", "network:station",
-                or a broadcast form ("*", "*:*", "network:*").
+            address: Optional target: an IPv4 address with optional port
+                ("ip" or "ip:port"), or "*" / "*:*" for a broadcast.
             low_limit: Lowest device instance to ask for (use with high_limit).
             high_limit: Highest device instance to ask for (use with low_limit).
             include_details: Also read each device's object-name, vendor-name and
@@ -378,8 +378,9 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         """Read one property of one object on a BACnet device (ReadProperty).
 
         The device is found by its instance number: from an earlier
-        discover_devices, from `address` (checked with a directed Who-Is), or
-        by a Who-Is broadcast when the server has a broadcast address.
+        discover_devices, from `address` (after checking that the device there
+        is `device_id`), or by a Who-Is broadcast when the server has a
+        broadcast address.
 
         Args:
             device_id: Device instance number (0-4194302).
@@ -390,11 +391,12 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
                 "object-name", "units", "status-flags", "priority-array",
                 "object-list". May carry an index: "priority-array[8]".
             array_index: Optional array index for array properties (0 = length).
-            address: Optional device address ("ip", "ip:port" or
-                "network:station"), e.g. "127.0.0.1:47809" for the mock.
+            address: Optional device address, "ip" or "ip:port", e.g.
+                "127.0.0.1:47809" for the mock. Its identity is checked first.
 
         Returns the decoded value: numbers, strings, enumeration names (e.g.
-        "active"), lists for arrays, null for an empty priority slot.
+        "active"), lists for arrays, null for an empty priority slot, and
+        "NaN" / "Infinity" / "-Infinity" for non-finite REALs.
         """
         meta = {"device_id": device_id}
 
@@ -435,8 +437,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
             priority: Command priority 1 (highest) to 16 (lowest) for
                 commandable objects; required with a null value.
             array_index: Optional array index for array properties.
-            address: Optional device address ("ip", "ip:port" or
-                "network:station").
+            address: Optional device address, "ip" or "ip:port".
         """
         meta = {"device_id": device_id}
 
