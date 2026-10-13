@@ -1,29 +1,43 @@
 [project]
 name = "bacnet-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Model Context Protocol server for BACnet/IP building automation."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "IndustriAgents" }]
+# Floors are the versions CI's lowest-direct job resolves and tests (anyio and
+# pydantic are what mcp 1.22 and its dependencies need).
 dependencies = [
-    "anyio>=4.0.0",
-    "mcp[cli]>=1.6.0",
-    "pydantic>=2.6.0",
+    "anyio>=4.7.0",
+    # Pinned: the server relies on bacpypes3 internals (transport tasks, the
+    # client state machine's retry count); re-verify before allowing a newer one.
+    "bacpypes3>=0.0.110,<0.0.111",
+    # The server subclasses FastMCP and uses its internals; mcp 2.x renamed it.
+    "mcp[cli]>=1.22.0,<2",
+    "pydantic>=2.11.0",
     "python-dotenv>=1.1.0",
-    "BAC0>=23.9.1",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.2.0",
-    "pytest-asyncio>=0.23.0",
-    "ruff>=0.6.0",
 ]
 
 [project.scripts]
 bacnet-mcp = "bacnet_mcp.cli:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+    "ruff>=0.14.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

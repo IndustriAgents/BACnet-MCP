@@ -1,25 +1,62 @@
 # bacnet-python
 
-Scaffold of a Python MCP server for BACnet/IP. Built with `uv`, `BAC0`, and `mcp[cli]`, it exposes the `bacnet-mcp` CLI that will let AI agents and MCP-compatible clients discover devices, read/write object properties, and address objects through friendly aliases. The protocol bindings are in progress: today the tools return placeholder data and nothing is sent to a device.
+A Python MCP server for BACnet/IP. Built with `uv`, [bacpypes3](https://github.com/JoelBender/BACpypes3)
+and the `mcp` SDK (FastMCP), it exposes the `bacnet-mcp` CLI, which lets AI
+agents and MCP-compatible clients discover devices (Who-Is/I-Am), read and
+write object properties (ReadProperty/WriteProperty), and address objects
+through friendly aliases.
 
-> **Status:** scaffold. The tools, configuration and response envelope are in place, but discovery and property reads return placeholder data (with `success: true`) and writes are not yet sent to a device. See [Status](../README.md#status) in the repository README.
+> **Status:** early. Discovery, reads and (opt-in) writes go over BACnet/IP and
+> are tested in CI against the mock device in
+> [`../bacnet-mock-device`](../bacnet-mock-device), not yet against
+> third-party controllers. See [Status](../README.md#status) in the
+> repository README for what is not implemented.
 
 ## Requirements
 
 - Python 3.11+
 - [uv](https://github.com/astral-sh/uv)
-- BAC0 dependencies (BACnet/IP stack, libsqlite, etc.) — installed by `uv sync`
+- bacpypes3 and the `mcp` SDK — installed by `uv sync`
 
-## Quick Start
+## Quick start
 
 From this directory (`bacnet-python/`):
 
 ```bash
 uv sync
-BACNET_INTERFACE=127.0.0.1 BACNET_PORT=47808 BACNET_WRITES_ENABLED=false uv run bacnet-mcp
+uv run bacnet-mcp
 ```
 
-This keeps the BAC0 stack on loopback with writes refused; it still announces itself with an I-Am broadcast on that interface at startup. Environment variables configure the interface, port, device instance, write toggle, and the optional object map path; set them in the process environment, because a `.env` file is read too late for the interface, port and device instance. See [Configuration](../README.md#configuration) in the repository README for the full list.
+By default the server binds UDP `127.0.0.1:47808`, has no broadcast address
+(so discovery needs a target `address`, such as the mock's `127.0.0.1:47809`)
+and refuses writes. Environment variables configure the interface and prefix,
+port, device instance, write switch, timeouts, log level and the optional
+object map; see [Configuration](../README.md#configuration) for the full
+list and [`.env.example`](.env.example) for this directory's `.env` — the
+only one read without `--env-file`, and only for `BACNET_*` connection
+settings. A `.env` in the working directory or a parent is never read. The
+write switch `BACNET_WRITES_ENABLED` and `OBJECT_MAP_FILE` are read only from
+the process environment or a file named with `--env-file`.
+
+`bacnet-mcp --help` lists the options (`--env-file PATH`, `--version`).
+
+The process speaks MCP JSON-RPC on stdout and nothing else: all logging goes
+to stderr, and while the server runs `sys.stdout` points at stderr too.
+
+## Tests and lint
+
+```bash
+uv sync --locked
+uv run --locked pytest
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+```
+
+The suite binds BACnet/IP only on free `127.0.0.1` UDP ports. It covers the
+configuration, the BACnet client against the mock device (imported from
+`../bacnet-mock-device`), the tools through an in-memory MCP session, and an
+end-to-end run that starts the mock and `python -m bacnet_mcp.cli` as
+separate processes and drives the server over stdio with the mcp client SDK.
 
 ## Layout
 
@@ -29,12 +66,12 @@ bacnet-python/
 ├── pyproject.toml
 ├── uv.lock
 ├── .python-version
-└── src/bacnet_mcp
-    ├── __init__.py
-    ├── cli.py
-    ├── server.py
-    ├── tools.py
-    └── bacnet_client.py
+├── .env.example
+├── src/bacnet_mcp
+│   ├── __init__.py
+│   ├── cli.py            # entry point: .env, stderr logging, startup checks
+│   ├── server.py         # FastMCP wiring, lifespan, stdout guard
+│   ├── tools.py          # the seven tools, argument checks, object map
+│   └── bacnet_client.py  # configuration and the bacpypes3 client
+└── tests/
 ```
-
-This scaffold wires a BACnet client wrapper (using BAC0), FastMCP server, object-map loader, and tools for (placeholder) device discovery, property reads/writes, alias listing and access, and ping diagnostics. Extend these modules to implement real BACnet services, then advanced ones (COV subscriptions, alarms, schedules, trends, files).

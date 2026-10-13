@@ -1,20 +1,35 @@
 [project]
 name = "bacnet-mock-device"
-version = "0.1.0"
-description = "Mock BACnet device (newline-delimited JSON over TCP) for MCP testing."
+version = "0.2.0"
+description = "Mock BACnet/IP device (bacpypes3) for testing the BACnet MCP server."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "IndustriAgents" }]
 dependencies = [
-    "anyio>=4.0.0",
-    "rich>=13.7.0",
-    "python-dotenv>=1.1.0",
+    # Pinned like the server's: the mock uses bacpypes3 internals.
+    "bacpypes3>=0.0.110,<0.0.111",
 ]
 
 [project.scripts]
 bacnet-mock-device = "bacnet_mock_device:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+    "ruff>=0.14.0",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

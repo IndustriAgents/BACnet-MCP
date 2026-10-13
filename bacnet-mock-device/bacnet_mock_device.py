@@ -1,181 +1,427 @@
-"""JSON-based BACnet mock device."""
+"""Mock BACnet/IP device for testing the BACnet MCP server.
+
+This is a real BACnet/IP device built on bacpypes3, not a stand-in protocol:
+it answers Who-Is with I-Am and serves ReadProperty and WriteProperty over UDP,
+so the MCP server's real client code path is exercised against it.
+
+Objects (instance numbers match the old JSON mock):
+
+- ``device,12345``: vendor ``MockVendor``, model ``TestController``
+- ``analog-input,1`` and ``analog-input,2``: zone temperatures that drift by up
+  to 0.2 every update interval; read-only
+- ``analog-output,1``: a commandable damper command (priority array)
+- ``binary-value,1``: a commandable fan enable (priority array)
+
+Only ``present-value`` of the analog output and the binary value can be
+written. Any other write is refused with ``property: write-access-denied``,
+and a read or write of an object that does not exist fails with
+``object: unknown-object``, as on a real device.
+"""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import json
+import ipaddress
+import logging
 import os
 import random
 import signal
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+import socket
+import sys
+import threading
+from dataclasses import dataclass
 
-from rich.console import Console
+from bacpypes3.app import Application
+from bacpypes3.errors import PropertyError
+from bacpypes3.local.analog import AnalogInputObject, AnalogOutputObject
+from bacpypes3.local.cmd import Commandable
+from bacpypes3.local.device import DeviceObject
+from bacpypes3.local.networkport import NetworkPortObject
+from bacpypes3.local.object import Object as LocalObject
+from bacpypes3.object import BinaryValueObject as _BinaryValueObject
+from bacpypes3.primitivedata import Enumerated
 
-console = Console()
+log = logging.getLogger("bacnet_mock_device")
+
+DEFAULT_HOST = "127.0.0.1"
+# 47809 rather than the BACnet/IP default 47808, so the mock and the MCP server
+# (which binds 47808 by default) can share one host.
+DEFAULT_PORT = 47809
+DEFAULT_DEVICE_ID = 12345
+DEFAULT_UPDATE_INTERVAL = 1.0
+
+VENDOR_IDENTIFIER = 999  # bacpypes3's sample/test vendor identifier
+VENDOR_NAME = "MockVendor"
+MODEL_NAME = "TestController"
+
+DRIFT_STEP = 0.2  # maximum change of an analog input per update
+DRIFT_SPAN = 5.0  # analog inputs stay within +/- this of their start value
 
 
-def env(default: str, key: str) -> str:
-    return os.getenv(key, default)
+class MockConfigError(ValueError):
+    """Raised when the mock's configuration is unusable."""
 
 
-@dataclass
+@dataclass(slots=True)
 class MockConfig:
-    host: str = env("127.0.0.1", "MOCK_BACNET_HOST")
-    port: int = int(env("7900", "MOCK_BACNET_PORT"))
-    update_interval: float = float(env("1.0", "MOCK_BACNET_UPDATE_INTERVAL"))
-    verbose: bool = env("false", "MOCK_BACNET_VERBOSE").lower() in {"1", "true", "yes", "on"}
+    """Where the mock listens and how it behaves."""
+
+    host: str = DEFAULT_HOST
+    port: int = DEFAULT_PORT
+    device_id: int = DEFAULT_DEVICE_ID
+    update_interval: float = DEFAULT_UPDATE_INTERVAL
+
+    def __post_init__(self) -> None:
+        try:
+            ipaddress.IPv4Interface(self.host)
+        except ValueError as exc:
+            raise MockConfigError(
+                f"host must be an IPv4 address, optionally with a prefix length: {exc}"
+            ) from exc
+        if not 1 <= self.port <= 65535:
+            raise MockConfigError(f"port must be 1-65535, got {self.port}")
+        if not 0 <= self.device_id <= 4194302:
+            raise MockConfigError(f"device id must be 0-4194302, got {self.device_id}")
+        if self.update_interval <= 0:
+            raise MockConfigError(f"update interval must be > 0, got {self.update_interval}")
+
+    @property
+    def interface(self) -> ipaddress.IPv4Interface:
+        return ipaddress.IPv4Interface(self.host)
+
+    @property
+    def bacnet_address(self) -> str:
+        """The address in bacpypes3 form, ``ip/prefix:port``."""
+        return f"{self.interface.with_prefixlen}:{self.port}"
 
 
-@dataclass
-class ObjectDatabase:
-    analog_inputs: Dict[int, float] = field(default_factory=lambda: {1: 72.5, 2: 68.0})
-    analog_outputs: Dict[int, float] = field(default_factory=lambda: {1: 50.0})
-    binary_values: Dict[int, bool] = field(default_factory=lambda: {1: True})
+class _RestrictedWrites:
+    """Refuse writes to every property not listed in ``_writable``.
+
+    bacpypes3's local objects accept a write to any property; a real device
+    does not, so the mock only allows what a controller would.
+    """
+
+    _writable: frozenset[str] = frozenset()
+
+    async def write_property(self, attr, value, index=None, priority=None):
+        name = attr if isinstance(attr, str) else self._property_identifier_class(attr).attr
+        if name not in self._writable:
+            raise PropertyError("writeAccessDenied")
+        if isinstance(value, Enumerated) and int(value) not in type(value)._attr_map:
+            # e.g. BinaryPV 2: bacpypes3 would store it, a controller refuses it
+            raise PropertyError("valueOutOfRange")
+        await super().write_property(attr, value, index, priority)
+
+
+class MockDeviceObject(_RestrictedWrites, DeviceObject):
+    pass
+
+
+class MockNetworkPort(_RestrictedWrites, NetworkPortObject):
+    pass
+
+
+class MockAnalogInput(_RestrictedWrites, AnalogInputObject):
+    pass
+
+
+class MockAnalogOutput(_RestrictedWrites, AnalogOutputObject):
+    _writable = frozenset({"presentValue"})
+
+
+class MockBinaryValue(_RestrictedWrites, Commandable, LocalObject, _BinaryValueObject):
+    # Built like bacpypes3's AnalogOutputObject: its BinaryValueObjectCmd lacks
+    # the local Object base, so it would not serve property-list.
+    _writable = frozenset({"presentValue"})
+
+
+class MockApplication(Application):
+    """bacpypes3 application that answers like a real controller.
+
+    - ReadProperty of ``device,4194303`` (the wildcard instance) reads this
+      device's own device object.
+    - A WriteProperty to a property the object does not have is answered with
+      ``property: unknown-property``; bacpypes3 alone answers
+      ``device: operational-problem`` (it fails while decoding the value).
+    - A WriteProperty at priority 6 (reserved for minimum on/off) is refused
+      with ``property: write-access-denied``, and an undefined enumeration
+      value (e.g. binary present-value 2) with ``property: value-out-of-range``.
+    """
+
+    async def do_ReadPropertyRequest(self, apdu) -> None:  # noqa: N802 - bacpypes3 name
+        # Device instance 4194303 means "the device you are": controllers
+        # support it, but bacpypes3's own check never matches.
+        object_type, instance = apdu.objectIdentifier
+        if str(object_type) == "device" and instance == 4194303 and self.device_object:
+            apdu.objectIdentifier = self.device_object.objectIdentifier
+        await super().do_ReadPropertyRequest(apdu)
+
+    async def do_WritePropertyRequest(self, apdu) -> None:  # noqa: N802 - bacpypes3 name
+        if apdu.priority == 6:
+            # Priority 6 is reserved for the minimum on/off algorithm.
+            raise PropertyError("writeAccessDenied")
+        obj = self.get_object_id(apdu.objectIdentifier)
+        if obj is not None and obj.get_property_type(apdu.propertyIdentifier) is None:
+            raise PropertyError("unknownProperty")
+        await super().do_WritePropertyRequest(apdu)
+
+
+def build_objects(device_id: int) -> list:
+    """The device object and the simulated points."""
+    return [
+        MockDeviceObject(
+            objectIdentifier=("device", device_id),
+            objectName="BACnet Mock Device",
+            vendorIdentifier=VENDOR_IDENTIFIER,
+            vendorName=VENDOR_NAME,
+            modelName=MODEL_NAME,
+            description="Mock BACnet/IP device for the BACnet MCP server",
+        ),
+        MockAnalogInput(
+            objectIdentifier=("analog-input", 1),
+            objectName="Zone 1 Temperature",
+            presentValue=72.5,
+            units="degreesFahrenheit",
+            description="Zone 1 temperature (drifts)",
+        ),
+        MockAnalogInput(
+            objectIdentifier=("analog-input", 2),
+            objectName="Zone 2 Temperature",
+            presentValue=68.0,
+            units="degreesFahrenheit",
+            description="Zone 2 temperature (drifts)",
+        ),
+        MockAnalogOutput(
+            objectIdentifier=("analog-output", 1),
+            objectName="Damper Command",
+            presentValue=50.0,
+            units="percent",
+            description="Damper position command (commandable)",
+        ),
+        MockBinaryValue(
+            objectIdentifier=("binary-value", 1),
+            objectName="Fan Enable",
+            presentValue="active",
+            description="Supply fan enable (commandable)",
+        ),
+    ]
+
+
+def check_bindable(addr: tuple[str, int]) -> None:
+    """Fail fast if a UDP address cannot be bound.
+
+    bacpypes3 retries a failed bind forever in the background and binds with
+    SO_REUSEPORT, so without this check a busy port either hangs the mock or is
+    silently shared with another BACnet process.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            sock.bind(addr)
+        except OSError as exc:
+            raise MockConfigError(f"cannot bind UDP {addr[0]}:{addr[1]}: {exc.strerror}") from exc
+
+
+def _transport_tasks(app: Application) -> list[asyncio.Task]:
+    """bacpypes3's pending socket-binding tasks (it binds in the background)."""
+    tasks: list[asyncio.Task] = []
+    for link_layer in app.link_layers.values():
+        server = getattr(link_layer, "server", None)
+        tasks.extend(t for t in getattr(server, "_transport_tasks", []) if not t.done())
+    return tasks
+
+
+def _shutdown(app: Application) -> None:
+    for task in _transport_tasks(app):
+        task.cancel()
+    app.close()
 
 
 class BACnetMockDevice:
-    def __init__(self, config: MockConfig) -> None:
-        self.config = config
-        self.db = ObjectDatabase()
-        self._server: Optional[asyncio.base_events.Server] = None
-        self._running = False
+    """A bacpypes3 application serving the mock objects."""
 
-    async def start(self) -> None:
-        if self._running:
+    def __init__(self, config: MockConfig | None = None) -> None:
+        self.config = config or MockConfig()
+        self.app: Application | None = None
+        self._drift_task: asyncio.Task | None = None
+        self._initial: dict[tuple[str, int], float] = {}
+
+    @property
+    def analog_inputs(self) -> list[MockAnalogInput]:
+        if self.app is None:
+            return []
+        return [o for o in self.app.objectIdentifier.values() if isinstance(o, MockAnalogInput)]
+
+    async def start(self, drift: bool = True) -> None:
+        if self.app is not None:
             return
-        self._running = True
-        self._server = await asyncio.start_server(self._handle_client, self.config.host, self.config.port)
-        addr = ", ".join(str(sock.getsockname()) for sock in self._server.sockets or [])
-        console.print(f"[bold green]BACnet mock device listening on {addr}[/bold green]")
-        asyncio.create_task(self._update_loop())
+        interface = self.config.interface
+        check_bindable((str(interface.ip), self.config.port))
+        if interface.network.prefixlen < 32 and os.name != "nt":
+            check_bindable((str(interface.network.broadcast_address), self.config.port))
+
+        network_port = MockNetworkPort(
+            self.config.bacnet_address,
+            objectIdentifier=("network-port", 1),
+            objectName="NetworkPort-1",
+        )
+        app = MockApplication.from_object_list(
+            [*build_objects(self.config.device_id), network_port]
+        )
+        # Only report "listening" once the sockets are really bound.
+        pending = _transport_tasks(app)
+        if pending:
+            _, not_done = await asyncio.wait(pending, timeout=5)
+            if not_done:
+                _shutdown(app)
+                raise MockConfigError(f"timed out binding UDP {interface.ip}:{self.config.port}")
+        self.app = app
+        for obj in self.analog_inputs:
+            key = (str(obj.objectIdentifier[0]), obj.objectIdentifier[1])
+            self._initial[key] = float(obj.presentValue)
+        if drift:
+            self._drift_task = asyncio.create_task(self._drift_loop())
+        log.info(
+            "BACnet mock device %s listening on %s:%s (BACnet/IP over UDP)",
+            self.config.device_id,
+            interface.ip,
+            self.config.port,
+        )
 
     async def stop(self) -> None:
-        self._running = False
-        if self._server:
-            self._server.close()
-            await self._server.wait_closed()
+        if self._drift_task is not None:
+            self._drift_task.cancel()
+            try:
+                await self._drift_task
+            except asyncio.CancelledError:
+                pass
+            self._drift_task = None
+        if self.app is not None:
+            _shutdown(self.app)
+            self.app = None
+            # asyncio closes datagram sockets on the next loop iterations
+            for _ in range(3):
+                await asyncio.sleep(0)
 
-    async def _update_loop(self) -> None:
-        while self._running:
+    def drift_once(self) -> None:
+        """Move every analog input by up to DRIFT_STEP, within DRIFT_SPAN."""
+        for obj in self.analog_inputs:
+            key = (str(obj.objectIdentifier[0]), obj.objectIdentifier[1])
+            start = self._initial.get(key, float(obj.presentValue))
+            value = float(obj.presentValue) + random.uniform(-DRIFT_STEP, DRIFT_STEP)
+            obj.presentValue = min(max(value, start - DRIFT_SPAN), start + DRIFT_SPAN)
+
+    async def _drift_loop(self) -> None:
+        while True:
             await asyncio.sleep(self.config.update_interval)
-            for idx in self.db.analog_inputs:
-                self.db.analog_inputs[idx] += random.uniform(-0.2, 0.2)
-            if self.config.verbose:
-                console.print("[cyan]Updated mock analog inputs[/cyan]")
-
-    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        peer = writer.get_extra_info("peername")
-        console.print(f"[yellow]Client connected {peer}[/yellow]")
-        try:
-            while data := await reader.readline():
-                data = data.strip()
-                if not data:
-                    continue
-                try:
-                    request = json.loads(data)
-                except json.JSONDecodeError:
-                    await self._send(writer, {"success": False, "error": "Invalid JSON"})
-                    continue
-                response = self._dispatch(request)
-                await self._send(writer, response)
-        finally:
-            writer.close()
-            await writer.wait_closed()
-            console.print(f"[yellow]Client disconnected {peer}[/yellow]")
-
-    def _dispatch(self, request: Dict[str, Any]) -> Dict[str, Any]:
-        op = request.get("op")
-        if op == "discover":
-            return {"success": True, "data": [{"device_id": 12345, "vendor": "MockVendor", "model": "TestController"}]}
-        if op == "read":
-            obj = request.get("object", "")
-            prop = request.get("property", "present-value")
-            try:
-                otype, inst = obj.split(":")
-                inst = int(inst)
-            except ValueError:
-                return {"success": False, "error": "Invalid object identifier"}
-            value = self._read_value(otype, inst, prop)
-            if value is None:
-                return {"success": False, "error": "Object/property not found"}
-            return {"success": True, "data": {"object": obj, "property": prop, "value": value}}
-        if op == "write":
-            obj = request.get("object", "")
-            prop = request.get("property", "present-value")
-            value = request.get("value")
-            try:
-                otype, inst = obj.split(":")
-                inst = int(inst)
-            except ValueError:
-                return {"success": False, "error": "Invalid object identifier"}
-            if not self._write_value(otype, inst, prop, value):
-                return {"success": False, "error": "Write failed"}
-            return {"success": True, "data": {"object": obj, "property": prop, "value": value}}
-        return {"success": False, "error": f"Unknown op '{op}'"}
-
-    def _read_value(self, otype: str, inst: int, prop: str) -> Optional[Any]:
-        if prop != "present-value":
-            return None
-        if otype == "analog-input":
-            return self.db.analog_inputs.get(inst)
-        if otype == "analog-output":
-            return self.db.analog_outputs.get(inst)
-        if otype == "binary-value":
-            return self.db.binary_values.get(inst)
-        return None
-
-    def _write_value(self, otype: str, inst: int, prop: str, value: Any) -> bool:
-        if prop != "present-value":
-            return False
-        if otype == "analog-output":
-            self.db.analog_outputs[inst] = float(value)
-            return True
-        if otype == "binary-value":
-            self.db.binary_values[inst] = bool(value)
-            return True
-        return False
-
-    async def _send(self, writer: asyncio.StreamWriter, message: Dict[str, Any]) -> None:
-        writer.write(json.dumps(message).encode("utf-8") + b"\n")
-        await writer.drain()
+            self.drift_once()
+            log.debug("updated analog inputs")
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Mock BACnet device (JSON over TCP).")
-    parser.add_argument("--host", default=env("127.0.0.1", "MOCK_BACNET_HOST"))
-    parser.add_argument("--port", type=int, default=int(env("7900", "MOCK_BACNET_PORT")))
-    parser.add_argument("--update-interval", type=float, default=float(env("1.0", "MOCK_BACNET_UPDATE_INTERVAL")))
-    parser.add_argument("--verbose", action="store_true", default=env("false", "MOCK_BACNET_VERBOSE").lower() in {"1", "true", "yes", "on"})
-    return parser.parse_args()
+def _env(key: str, default: str) -> str:
+    return os.environ.get(key, default)
 
 
-async def run_server(config: MockConfig) -> None:
-    server = BACnetMockDevice(config)
-    await server.start()
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="bacnet-mock-device",
+        description="Mock BACnet/IP device (bacpypes3) for testing the BACnet MCP server.",
+    )
+    parser.add_argument(
+        "--host",
+        default=_env("MOCK_BACNET_HOST", DEFAULT_HOST),
+        help="IPv4 address to bind, optionally with a prefix length such as "
+        "192.168.1.20/24 to also receive broadcasts on that subnet "
+        "(default: %(default)s, env MOCK_BACNET_HOST)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(_env("MOCK_BACNET_PORT", str(DEFAULT_PORT))),
+        help="UDP port (default: %(default)s, env MOCK_BACNET_PORT)",
+    )
+    parser.add_argument(
+        "--device-id",
+        type=int,
+        default=int(_env("MOCK_BACNET_DEVICE_ID", str(DEFAULT_DEVICE_ID))),
+        help="device instance number (default: %(default)s, env MOCK_BACNET_DEVICE_ID)",
+    )
+    parser.add_argument(
+        "--update-interval",
+        type=float,
+        default=float(_env("MOCK_BACNET_UPDATE_INTERVAL", str(DEFAULT_UPDATE_INTERVAL))),
+        help="seconds between analog input updates "
+        "(default: %(default)s, env MOCK_BACNET_UPDATE_INTERVAL)",
+    )
+    parser.add_argument(
+        "--exit-on-stdin-eof",
+        action="store_true",
+        help="stop when stdin is closed, e.g. because the process that started the "
+        "mock (a test run) has died",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=_env("MOCK_BACNET_VERBOSE", "false").strip().lower() in {"1", "true", "yes", "on"},
+        help="log every analog input update (env MOCK_BACNET_VERBOSE)",
+    )
+    return parser.parse_args(argv)
 
+
+def _watch_stdin(loop: asyncio.AbstractEventLoop, stop: asyncio.Event) -> None:
+    """Set ``stop`` when stdin reaches end of file (the parent went away)."""
+    try:
+        while sys.stdin.buffer.read(4096):
+            pass
+    finally:
+        loop.call_soon_threadsafe(stop.set)
+
+
+async def run(config: MockConfig, exit_on_stdin_eof: bool = False) -> None:
+    device = BACnetMockDevice(config)
+    await device.start()
+
+    stop = asyncio.Event()
     loop = asyncio.get_running_loop()
-    stop_event = asyncio.Event()
-
-    def _signal_handler() -> None:
-        stop_event.set()
-
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, _signal_handler)
-        except NotImplementedError:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:  # pragma: no cover - Windows
             pass
+    if exit_on_stdin_eof:
+        threading.Thread(target=_watch_stdin, args=(loop, stop), daemon=True).start()
+    try:
+        await stop.wait()
+    finally:
+        log.info("stopping BACnet mock device")
+        await device.stop()
 
-    await stop_event.wait()
-    console.print("\n[red]Stopping BACnet mock device...[/red]")
-    await server.stop()
 
-
-def main() -> None:
-    args = parse_args()
-    config = MockConfig(host=args.host, port=args.port, update_interval=args.update_interval, verbose=args.verbose)
-    asyncio.run(run_server(config))
+def main(argv: list[str] | None = None) -> None:
+    try:
+        args = parse_args(argv)
+    except ValueError as exc:  # a malformed MOCK_BACNET_* value
+        sys.exit(f"bacnet-mock-device: {exc}")
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
+    if not args.verbose:
+        logging.getLogger("bacpypes3").setLevel(logging.WARNING)
+    try:
+        config = MockConfig(
+            host=args.host,
+            port=args.port,
+            device_id=args.device_id,
+            update_interval=args.update_interval,
+        )
+        asyncio.run(run(config, exit_on_stdin_eof=args.exit_on_stdin_eof))
+    except MockConfigError as exc:
+        sys.exit(f"bacnet-mock-device: {exc}")
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

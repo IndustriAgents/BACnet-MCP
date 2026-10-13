@@ -13,13 +13,14 @@ concurrency:
 permissions:
   contents: read
 
-# Cheap, deterministic checks only: nothing here opens a BACnet/IP socket or
-# needs a device. Both uv projects commit their uv.lock, so every step runs
-# with --locked and fails if pyproject.toml and the lockfile have drifted.
+# No device and no network: the tests bind BACnet/IP (UDP) on free 127.0.0.1
+# ports only. Both uv projects commit their uv.lock, so every step runs with
+# --locked and fails if pyproject.toml and the lockfile have drifted.
 jobs:
   server:
     name: bacnet-python (MCP server)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: bacnet-python
@@ -36,45 +37,23 @@ jobs:
       - name: Byte-compile sources
         run: uv run --locked python -m compileall -q src
 
-      # Builds the FastMCP server and lists its tools in-process. This does not
-      # run the lifespan, so BAC0 is never started and no UDP port is bound.
-      # (`bacnet-mcp` itself has no --help: it starts the stdio server at once.)
-      - name: Import BAC0 and the package, and list registered tools
-        run: |
-          uv run --locked python - <<'EOF'
-          import asyncio
+      - name: Lint
+        run: uv run --locked ruff check .
 
-          # bacnet_client wraps `import BAC0` in `except Exception: BAC0 = None`,
-          # so a broken BACnet stack would only surface at server startup.
-          # Import it directly so CI fails here, with the real traceback.
-          import BAC0  # noqa: F401
+      - name: Check formatting
+        run: uv run --locked ruff format --check .
 
-          from bacnet_mcp import bacnet_client
-          from bacnet_mcp.cli import main  # noqa: F401  (console entry point imports)
-          from bacnet_mcp.server import BACnetMCPServer
-
-          assert bacnet_client.BAC0 is not None, "bacnet_mcp could not import BAC0"
-
-          tools = asyncio.run(BACnetMCPServer()._server.list_tools())
-          names = sorted(t.name for t in tools)
-          print(f"{len(names)} tools: {', '.join(names)}")
-          # The exact set, so a dropped or renamed tool fails CI. Keep this in
-          # step with the tool table in README.md.
-          expected = [
-              "discover_devices",
-              "list_objects",
-              "ping",
-              "read_object_by_alias",
-              "read_property",
-              "write_object_by_alias",
-              "write_property",
-          ]
-          assert names == expected, names
-          EOF
+      # Unit tests, the tool layer through an in-memory MCP session, and an
+      # end-to-end run: the mock device (../bacnet-mock-device) and the real
+      # server over stdio, driven with the mcp client SDK. The test suite also
+      # checks the exact set of registered tools.
+      - name: Tests
+        run: uv run --locked pytest -v
 
   mock:
     name: bacnet-mock-device
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: bacnet-mock-device
@@ -94,17 +73,41 @@ jobs:
       - name: Entry point help
         run: uv run --locked bacnet-mock-device --help
 
-      # Exercises the request handler directly; no TCP socket is opened.
-      - name: Answer discover/read requests in-process
-        run: |
-          uv run --locked python - <<'EOF'
-          from bacnet_mock_device import BACnetMockDevice, MockConfig
+      - name: Lint
+        run: uv run --locked ruff check .
 
-          device = BACnetMockDevice(MockConfig())
-          discover = device._dispatch({"op": "discover"})
-          read = device._dispatch({"op": "read", "object": "analog-input:1", "property": "present-value"})
-          print(discover)
-          print(read)
-          assert discover["success"] and discover["data"], discover
-          assert read["success"] and isinstance(read["data"]["value"], float), read
-          EOF
+      - name: Check formatting
+        run: uv run --locked ruff format --check .
+
+      # Starts the mock on free 127.0.0.1 ports and drives it with a bacpypes3
+      # client; nothing leaves the runner's loopback interface.
+      - name: Tests
+        run: uv run --locked pytest -v
+
+  # The declared floors must be versions the tests pass on: install the lowest
+  # versions the direct dependencies allow (dev tools included) in fresh venvs
+  # and run both test suites against them.
+  lowest-direct:
+    name: lowest direct dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Server tests with the lowest direct dependencies
+        working-directory: bacnet-python
+        run: |
+          uv venv --python 3.11 "$RUNNER_TEMP/lowest-server"
+          uv pip install --python "$RUNNER_TEMP/lowest-server/bin/python" --resolution lowest-direct -e . --group dev
+          "$RUNNER_TEMP/lowest-server/bin/python" -m pytest -q -p no:cacheprovider
+
+      - name: Mock tests with the lowest direct dependencies
+        working-directory: bacnet-mock-device
+        run: |
+          uv venv --python 3.11 "$RUNNER_TEMP/lowest-mock"
+          uv pip install --python "$RUNNER_TEMP/lowest-mock/bin/python" --resolution lowest-direct -e . --group dev
+          "$RUNNER_TEMP/lowest-mock/bin/python" -m pytest -q -p no:cacheprovider
