@@ -216,7 +216,7 @@ class BACnetMCPServer:
             lifespan=self._lifespan,
         )
         # serverInfo.version: this package's version, not the mcp SDK's default.
-        self._server._mcp_server.version = package_version("bacnet-mcp")
+        self._server._mcp_server.version = package_version("industriagents-bacnet-mcp")
         self._server.on_client_disconnect = getattr(self.client, "client_disconnected", None)
         resources = ToolResources(
             client=self.client,

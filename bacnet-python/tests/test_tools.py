@@ -30,15 +30,7 @@ from bacnet_mcp.bacnet_client import BACnetClient, BACnetClientError, BACnetConf
 from bacnet_mcp.server import BACnetMCPServer
 from bacnet_mcp.tools import ToolConfig
 
-TOOLS = [
-    "discover_devices",
-    "list_objects",
-    "ping",
-    "read_object_by_alias",
-    "read_property",
-    "write_object_by_alias",
-    "write_property",
-]
+TOOLS = ["discover_devices", "list_objects", "ping", "read_property", "write_property"]
 
 
 class FakeClient:
@@ -129,7 +121,7 @@ class FakeClient:
 
 async def call(session, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     result = await session.call_tool(name, arguments)
-    assert not result.isError, result
+    assert result.isError is (json.loads(result.content[0].text).get("success") is False), result
     envelope = json.loads(result.content[0].text)
     assert set(envelope) == {"success", "data", "error", "meta"}
     assert result.structuredContent == envelope
@@ -161,15 +153,21 @@ def test_every_tool_is_listed_with_a_description():
         assert tool.description and len(tool.description) > 40, tool.name
         assert tool.annotations is not None, tool.name
     by_name = {t.name: t for t in tools}
-    for name in ("write_property", "write_object_by_alias"):
+    for name in ("write_property",):
         assert by_name[name].annotations.destructiveHint is True
         assert by_name[name].annotations.idempotentHint is False  # never invite a retry
         assert by_name[name].annotations.readOnlyHint is False
-    for name in ("discover_devices", "read_property", "read_object_by_alias", "list_objects"):
+    for name in ("discover_devices", "read_property", "list_objects"):
         assert by_name[name].annotations.readOnlyHint is True
     assert by_name["read_property"].annotations.readOnlyHint is True
     required = set(by_name["read_property"].inputSchema["required"])
-    assert required == {"device_id", "object_type", "object_instance"}
+    assert required == {"target"}
+    assert set(by_name["read_property"].inputSchema["oneOf"][0]["required"]) == {
+        "target",
+        "device_id",
+        "object_type",
+        "object_instance",
+    }
 
 
 @pytest.mark.parametrize(
@@ -677,7 +675,7 @@ def test_server_info_reports_this_packages_version():
 
     result = asyncio.run(main())
     assert result.serverInfo.name == "BACnet MCP Server"
-    assert result.serverInfo.version == version("bacnet-mcp")
+    assert result.serverInfo.version == version("industriagents-bacnet-mcp")
     assert result.serverInfo.version != version("mcp")
 
 
@@ -702,7 +700,9 @@ def test_tool_calls_see_the_mcp_requests_cancel_scope():
     server = make_server()
     seen = {}
 
-    @server.mcp.tool()
+    server.mcp.remove_tool("ping")
+
+    @server.mcp.tool(name="ping")
     async def probe() -> dict:
         """Report the request cancel scope the server captured."""
         scope = request_cancel_scope.get()
@@ -710,7 +710,7 @@ def test_tool_calls_see_the_mcp_requests_cancel_scope():
         return {"success": True, "data": None, "error": None, "meta": {}}
 
     async def scenario(session):
-        return await session.call_tool("probe", {})
+        return await session.call_tool("ping", {})
 
     with_session(server, scenario)
     assert isinstance(seen["scope"], anyio.CancelScope)

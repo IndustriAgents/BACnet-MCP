@@ -122,7 +122,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "checkout is read, and only for BACNET_* connection settings. The process "
         "environment still wins",
     )
-    parser.add_argument("--version", action="version", version=f"%(prog)s {version('bacnet-mcp')}")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {version('industriagents-bacnet-mcp')}"
+    )
     return parser.parse_args(argv)
 
 

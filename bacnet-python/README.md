@@ -1,3 +1,10 @@
+> **0.3.0 package and tool migration:** Install `industriagents-bacnet-mcp`
+> from npm (requires uv) or PyPI; the command remains `bacnet-mcp`.
+> The advertised catalog now contains **5 tools**. Older tool names in
+> the examples below remain compatibility calls. See the
+> [architecture and canonical tool guide](../docs/architecture.md)
+> and [release guide](../docs/release.md).
+
 # bacnet-python
 
 A Python MCP server for BACnet/IP. Built with `uv`, [bacpypes3](https://github.com/JoelBender/BACpypes3)

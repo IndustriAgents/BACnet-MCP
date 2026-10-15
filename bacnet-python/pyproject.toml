@@ -1,6 +1,6 @@
 [project]
-name = "bacnet-mcp"
-version = "0.2.0"
+name = "industriagents-bacnet-mcp"
+version = "0.3.0"
 description = "Model Context Protocol server for BACnet/IP building automation."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -9,13 +9,16 @@ authors = [{ name = "IndustriAgents" }]
 # Floors are the versions CI's lowest-direct job resolves and tests (anyio and
 # pydantic are what mcp 1.22 and its dependencies need).
 dependencies = [
+    "jsonschema>=4.23,<5",
     "anyio>=4.7.0",
     # Pinned: the server relies on bacpypes3 internals (transport tasks, the
     # client state machine's retry count); re-verify before allowing a newer one.
     "bacpypes3>=0.0.110,<0.0.111",
     # The server subclasses FastMCP and uses its internals; mcp 2.x renamed it.
+    # Contract wire errors require CallToolResult passthrough (tested on 1.22+).
     "mcp[cli]>=1.22.0,<2",
-    "pydantic>=2.11.0",
+    # The supported MCP 1.x floor uses typing helpers removed in Pydantic 2.13.
+    "pydantic>=2.11.0,<2.13",
     "python-dotenv>=1.1.0",
 ]
 
@@ -41,3 +44,6 @@ select = ["E", "W", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bacnet_mcp"]

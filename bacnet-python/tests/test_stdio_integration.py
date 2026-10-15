@@ -131,7 +131,7 @@ def server_env(writes: bool) -> dict[str, str]:
 
 async def call(session: ClientSession, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     result = await session.call_tool(name, arguments)
-    assert not result.isError, result
+    assert result.isError is (json.loads(result.content[0].text).get("success") is False), result
     return json.loads(result.content[0].text)
 
 
@@ -165,7 +165,7 @@ def test_mcp_sdk_session_against_the_mock(tmp_path, caplog):
 
         async def scenario(session: ClientSession):
             tools = (await session.list_tools()).tools
-            assert len(tools) == 7 and all(t.description for t in tools)
+            assert len(tools) == 5 and all(t.description for t in tools)
 
             found = await call(session, "discover_devices", {"address": address})
             assert found["success"], found
@@ -324,7 +324,7 @@ def test_stdout_carries_only_json_rpc(tmp_path):
         assert json.loads(line)["jsonrpc"] == "2.0", line
     called = {r["params"]["name"] for r in requests if r.get("method") == "tools/call"}
     listed = {t["name"] for t in responses[2]["result"]["tools"]}
-    assert called == listed  # every tool, so a print() anywhere would show up
+    assert listed == called - {"read_object_by_alias", "write_object_by_alias"}
     for request_id in range(3, 10):
         envelope = responses[request_id]["result"]["structuredContent"]
         assert envelope["success"] is True, envelope
@@ -349,7 +349,7 @@ def test_the_server_starts_without_a_device(tmp_path):
     returncode, lines, responses, stderr = raw_session(SERVER_COMMAND, env, tmp_path, requests)
     assert returncode == 0, stderr
     assert responses[1]["result"]["serverInfo"]["name"] == "BACnet MCP Server"
-    assert len(responses[2]["result"]["tools"]) == 7
+    assert len(responses[2]["result"]["tools"]) == 5
     read = responses[3]["result"]["structuredContent"]
     assert read["success"] is False and "no BACnet device answered" in read["error"]
     write = responses[4]["result"]["structuredContent"]
@@ -377,7 +377,8 @@ class IdleClient:
 server = BACnetMCPServer(client=IdleClient(), tool_config=ToolConfig())
 
 
-@server.mcp.tool()
+server.mcp.remove_tool("ping")
+@server.mcp.tool(name="ping")
 async def noisy() -> dict:
     \"\"\"Print to stdout, as a careless library might.\"\"\"
     print("noise from a library")
@@ -393,7 +394,7 @@ def test_print_to_stdout_cannot_corrupt_the_protocol(tmp_path):
         [sys.executable, "-c", NOISY_SERVER],
         isolated_env(PYTHONUNBUFFERED="1"),
         tmp_path,
-        [tool_call(2, "noisy", {})],
+        [tool_call(2, "ping", {})],
     )
     assert returncode == 0, stderr
     for line in lines:
@@ -636,7 +637,7 @@ def test_calls_sent_just_before_eof_are_answered_but_writes_are_not_sent():
     assert result.returncode == 0, result.stderr
     assert replies[2]["result"]["structuredContent"]["success"] is True
     assert "objects" in replies[3]["result"]["structuredContent"]["data"]
-    assert len(replies[5]["result"]["tools"]) == 7
+    assert len(replies[5]["result"]["tools"]) == 5
     if 4 in replies:  # the stopped write answers not_sent
         meta = replies[4]["result"]["structuredContent"]["meta"]
         assert (meta["outcome"], meta["request_sent"]) == ("not_sent", False)
@@ -671,7 +672,8 @@ class IdleClient:
 server = BACnetMCPServer(client=IdleClient(), tool_config=ToolConfig())
 
 
-@server.mcp.tool()
+server.mcp.remove_tool("ping")
+@server.mcp.tool(name="ping")
 async def slow() -> dict:
     \"\"\"Outlive the drain at end of input.\"\"\"
     await anyio.sleep(1.0)
@@ -684,7 +686,7 @@ server.run()
 
 def test_a_reply_that_can_no_longer_be_delivered_is_a_clean_exit(tmp_path):
     """A call still running after the drain limit cannot answer: exit 0, no traceback."""
-    requests = [*INITIALIZE, tool_call(2, "slow", {})]
+    requests = [*INITIALIZE, tool_call(2, "ping", {})]
     result = subprocess.run(
         [sys.executable, "-c", SLOW_TOOL_SERVER],
         input="".join(json.dumps(r) + "\n" for r in requests),

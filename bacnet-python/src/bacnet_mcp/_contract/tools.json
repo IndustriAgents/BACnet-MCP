@@ -1,0 +1,952 @@
+{
+  "schemaVersion": 1,
+  "protocol": "bacnet",
+  "transport": "stdio",
+  "tools": [
+    {
+      "name": "read_property",
+      "description": "Select one target mode and provide only its parameters.\n\naddress: Read one property of one object on a BACnet device (ReadProperty).\n\nThe device is found by its instance number: from an earlier\ndiscover_devices, from `address` (after checking that the device there\nis `device_id`), or by a Who-Is broadcast when the server has a\nbroadcast address.\n\nArgs:\n    device_id: Device instance number (0-4194302).\n    object_type: BACnet object type, e.g. \"analog-input\", \"binary-value\",\n        \"analog-output\", \"device\".\n    object_instance: Object instance number.\n    property_id: Property name, e.g. \"present-value\" (default),\n        \"object-name\", \"units\", \"status-flags\", \"priority-array\",\n        \"object-list\". May carry an index: \"priority-array[8]\".\n    array_index: Optional array index for array properties (0 = length).\n    address: Optional device address, \"ip\" or \"ip:port\", e.g.\n        \"127.0.0.1:47809\" for the mock. Its identity is checked first.\n\nReturns the decoded value: numbers, strings, enumeration names (e.g.\n\"active\"), lists for arrays, null for an empty priority slot, and\n\"NaN\" / \"Infinity\" / \"-Infinity\" for non-finite REALs.\n\nalias: Read the property an object-map alias points to (see list_objects).\n\nArgs:\n    alias: An alias from the object map.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "title": "Device Id",
+            "type": "integer",
+            "description": "device id for the selected operation; see its mode description."
+          },
+          "object_type": {
+            "title": "Object Type",
+            "type": "string",
+            "description": "object type for the selected operation; see its mode description."
+          },
+          "object_instance": {
+            "title": "Object Instance",
+            "type": "integer",
+            "description": "object instance for the selected operation; see its mode description."
+          },
+          "property_id": {
+            "default": "present-value",
+            "title": "Property Id",
+            "type": "string",
+            "description": "property id for the selected operation; see its mode description."
+          },
+          "array_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Array Index",
+            "description": "array index for the selected operation; see its mode description."
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Address",
+            "description": "address for the selected operation; see its mode description."
+          },
+          "target": {
+            "anyOf": [
+              {
+                "const": "address",
+                "type": "string"
+              },
+              {
+                "const": "alias",
+                "type": "string"
+              }
+            ],
+            "description": "Select the target mode described above."
+          },
+          "alias": {
+            "title": "Alias",
+            "type": "string",
+            "description": "alias for the selected operation; see its mode description."
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "oneOf": [
+          {
+            "properties": {
+              "device_id": {
+                "title": "Device Id",
+                "type": "integer"
+              },
+              "object_type": {
+                "title": "Object Type",
+                "type": "string"
+              },
+              "object_instance": {
+                "title": "Object Instance",
+                "type": "integer"
+              },
+              "property_id": {
+                "default": "present-value",
+                "title": "Property Id",
+                "type": "string"
+              },
+              "array_index": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Array Index"
+              },
+              "address": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Address"
+              },
+              "target": {
+                "const": "address",
+                "type": "string"
+              }
+            },
+            "required": [
+              "device_id",
+              "object_type",
+              "object_instance",
+              "target"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          },
+          {
+            "properties": {
+              "alias": {
+                "title": "Alias",
+                "type": "string"
+              },
+              "target": {
+                "const": "alias",
+                "type": "string"
+              }
+            },
+            "required": [
+              "alias",
+              "target"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "write_property",
+      "description": "Select one target mode and provide only its parameters.\n\naddress: Write one property of one object on a BACnet device (WriteProperty).\n\nThis changes physical equipment. It is refused unless the server was\nstarted with BACNET_WRITES_ENABLED=true, and it reports success only\nwhen the device acknowledges the write.\n\nArgs:\n    device_id: Device instance number (0-4194302).\n    object_type: BACnet object type, e.g. \"analog-output\", \"binary-value\".\n    object_instance: Object instance number.\n    property_id: Property name, usually \"present-value\".\n    value: New value: a number for analog objects, \"active\"/\"inactive\"\n        (or true/false) for binary objects, a string for text. null (or\n        the string \"null\") relinquishes the given priority slot of a\n        commandable object.\n    priority: Command priority 1 (highest) to 16 (lowest) for\n        commandable objects (6 is reserved and refused); required with\n        a null value.\n    array_index: Optional array index for array properties.\n    address: Optional device address, \"ip\" or \"ip:port\".\n\nalias: Write the property an object-map alias points to (see list_objects).\n\nThis changes physical equipment and is refused unless the server was\nstarted with BACNET_WRITES_ENABLED=true. The command priority comes\nfrom the alias's \"priority\" entry, if any.\n\nArgs:\n    alias: An alias from the object map.\n    value: New value (see write_property); null (or the string \"null\")\n        relinquishes the alias's priority slot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "title": "Device Id",
+            "type": "integer",
+            "description": "device id for the selected operation; see its mode description."
+          },
+          "object_type": {
+            "title": "Object Type",
+            "type": "string",
+            "description": "object type for the selected operation; see its mode description."
+          },
+          "object_instance": {
+            "title": "Object Instance",
+            "type": "integer",
+            "description": "object instance for the selected operation; see its mode description."
+          },
+          "property_id": {
+            "title": "Property Id",
+            "type": "string",
+            "description": "property id for the selected operation; see its mode description."
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value",
+            "description": "value for the selected operation; see its mode description."
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Priority",
+            "description": "priority for the selected operation; see its mode description."
+          },
+          "array_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Array Index",
+            "description": "array index for the selected operation; see its mode description."
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Address",
+            "description": "address for the selected operation; see its mode description."
+          },
+          "target": {
+            "anyOf": [
+              {
+                "const": "address",
+                "type": "string"
+              },
+              {
+                "const": "alias",
+                "type": "string"
+              }
+            ],
+            "description": "Select the target mode described above."
+          },
+          "alias": {
+            "title": "Alias",
+            "type": "string",
+            "description": "alias for the selected operation; see its mode description."
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "oneOf": [
+          {
+            "properties": {
+              "device_id": {
+                "title": "Device Id",
+                "type": "integer"
+              },
+              "object_type": {
+                "title": "Object Type",
+                "type": "string"
+              },
+              "object_instance": {
+                "title": "Object Instance",
+                "type": "integer"
+              },
+              "property_id": {
+                "title": "Property Id",
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Value"
+              },
+              "priority": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Priority"
+              },
+              "array_index": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Array Index"
+              },
+              "address": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Address"
+              },
+              "target": {
+                "const": "address",
+                "type": "string"
+              }
+            },
+            "required": [
+              "device_id",
+              "object_type",
+              "object_instance",
+              "property_id",
+              "value",
+              "target"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          },
+          {
+            "properties": {
+              "alias": {
+                "title": "Alias",
+                "type": "string"
+              },
+              "value": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Value"
+              },
+              "target": {
+                "const": "alias",
+                "type": "string"
+              }
+            },
+            "required": [
+              "alias",
+              "value",
+              "target"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "discover_devices",
+      "description": "Find BACnet devices with Who-Is and collect their I-Am answers.\n\nWithout `address` the Who-Is is a global broadcast, which needs the\nserver's BACNET_INTERFACE to include a prefix length (for example\n192.168.1.10/24). With `address` it is sent to that one address, e.g.\n\"192.168.1.20\" or \"127.0.0.1:47809\" (the repository's mock device).\n\nArgs:\n    timeout_ms: How long to wait for I-Am answers (100-60000 ms).\n    address: Optional target: an IPv4 address with optional port\n        (\"ip\" or \"ip:port\"), or \"*\" / \"*:*\" for a broadcast.\n    low_limit: Lowest device instance to ask for (use with high_limit).\n    high_limit: Highest device instance to ask for (use with low_limit).\n    include_details: Also read each device's object-name, vendor-name and\n        model-name.\n\nReturns devices with device_id, address, vendor_id, max_apdu_length,\nsegmentation and (with include_details) name, vendor and model. Details\nget at most 10 s after the Who-Is; meta.details is \"complete\", or\n\"partial\" with details_partial set on the devices not fully read.",
+      "inputSchema": {
+        "properties": {
+          "timeout_ms": {
+            "default": 3000,
+            "title": "Timeout Ms",
+            "type": "integer",
+            "description": "timeout ms for the selected operation; see its mode description."
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Address",
+            "description": "address for the selected operation; see its mode description."
+          },
+          "low_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Low Limit",
+            "description": "low limit for the selected operation; see its mode description."
+          },
+          "high_limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "High Limit",
+            "description": "high limit for the selected operation; see its mode description."
+          },
+          "include_details": {
+            "default": true,
+            "title": "Include Details",
+            "type": "boolean",
+            "description": "include details for the selected operation; see its mode description."
+          }
+        },
+        "title": "discover_devicesArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "list_objects",
+      "description": "List the aliases defined in the object map (OBJECT_MAP_FILE).\n\nEach alias names one property of one object on one device and can be\nused with read_object_by_alias and write_object_by_alias. Nothing is\nsent to the network.",
+      "inputSchema": {
+        "properties": {},
+        "title": "list_objectsArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ping",
+      "description": "Report the server's BACnet/IP settings and state; sends nothing.\n\nShows the bound interface and port, the broadcast address (if any),\nthe server's own device instance, whether writes are enabled, the\ndevices whose addresses are known, and the object map status.",
+      "inputSchema": {
+        "properties": {},
+        "title": "pingArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    }
+  ],
+  "routes": {
+    "read_property": {
+      "selector": "target",
+      "options": {
+        "address": "read_property",
+        "alias": "read_object_by_alias"
+      },
+      "legacyHandler": "read_property"
+    },
+    "write_property": {
+      "selector": "target",
+      "options": {
+        "address": "write_property",
+        "alias": "write_object_by_alias"
+      },
+      "legacyHandler": "write_property"
+    },
+    "discover_devices": {
+      "handler": "discover_devices"
+    },
+    "list_objects": {
+      "handler": "list_objects"
+    },
+    "ping": {
+      "handler": "ping"
+    }
+  },
+  "legacy": {
+    "read_property": "read_property",
+    "read_object_by_alias": "read_property",
+    "write_property": "write_property",
+    "write_object_by_alias": "write_property",
+    "discover_devices": "discover_devices",
+    "list_objects": "list_objects",
+    "ping": "ping"
+  },
+  "legacySchemas": {
+    "discover_devices": {
+      "properties": {
+        "timeout_ms": {
+          "default": 3000,
+          "title": "Timeout Ms",
+          "type": "integer"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        },
+        "low_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Low Limit"
+        },
+        "high_limit": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "High Limit"
+        },
+        "include_details": {
+          "default": true,
+          "title": "Include Details",
+          "type": "boolean"
+        }
+      },
+      "title": "discover_devicesArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "read_property": {
+      "properties": {
+        "device_id": {
+          "title": "Device Id",
+          "type": "integer"
+        },
+        "object_type": {
+          "title": "Object Type",
+          "type": "string"
+        },
+        "object_instance": {
+          "title": "Object Instance",
+          "type": "integer"
+        },
+        "property_id": {
+          "default": "present-value",
+          "title": "Property Id",
+          "type": "string"
+        },
+        "array_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Array Index"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        }
+      },
+      "required": [
+        "device_id",
+        "object_type",
+        "object_instance"
+      ],
+      "title": "read_propertyArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "write_property": {
+      "properties": {
+        "device_id": {
+          "title": "Device Id",
+          "type": "integer"
+        },
+        "object_type": {
+          "title": "Object Type",
+          "type": "string"
+        },
+        "object_instance": {
+          "title": "Object Instance",
+          "type": "integer"
+        },
+        "property_id": {
+          "title": "Property Id",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Priority"
+        },
+        "array_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Array Index"
+        },
+        "address": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Address"
+        }
+      },
+      "required": [
+        "device_id",
+        "object_type",
+        "object_instance",
+        "property_id",
+        "value"
+      ],
+      "title": "write_propertyArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "list_objects": {
+      "properties": {},
+      "title": "list_objectsArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "read_object_by_alias": {
+      "properties": {
+        "alias": {
+          "title": "Alias",
+          "type": "string"
+        }
+      },
+      "required": [
+        "alias"
+      ],
+      "title": "read_object_by_aliasArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "write_object_by_alias": {
+      "properties": {
+        "alias": {
+          "title": "Alias",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "alias",
+        "value"
+      ],
+      "title": "write_object_by_aliasArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "ping": {
+      "properties": {},
+      "title": "pingArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "resultSchema": {
+    "type": "object",
+    "required": [
+      "success",
+      "data",
+      "error",
+      "meta"
+    ],
+    "properties": {
+      "success": {
+        "type": "boolean"
+      },
+      "data": {},
+      "error": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "meta": {
+        "type": "object"
+      }
+    },
+    "additionalProperties": false
+  },
+  "localStatusTools": [
+    "ping"
+  ]
+}
