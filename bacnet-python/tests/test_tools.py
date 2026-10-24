@@ -563,7 +563,8 @@ def test_non_finite_values_survive_strict_json():
             True,
         ),
         (WriteError("no reply: the write may have been applied", "unknown", True), "unknown", True),
-        (BACnetClientError("no device 1 answered"), "not_sent", False),
+        (WriteError("no device 1 answered", "not_sent", False), "not_sent", False),
+        (BACnetClientError("failure after dispatch"), "unknown", True),
         (RuntimeError("boom"), "unknown", True),
         (AbortPDU(reason="noResponse"), "unknown", True),
     ],
@@ -782,3 +783,18 @@ def test_a_same_step_cancel_through_the_sdk_leaves_the_server_answering():
     results, writes = asyncio.run(main())
     assert writes == []
     assert set(results) == {"Request cancelled"}
+
+
+@pytest.mark.parametrize("content", ["not JSON", {"broken": {"device_id": True}}])
+def test_alias_write_with_invalid_map_is_not_sent(tmp_path, content):
+    client = FakeClient(writes_enabled=True)
+    server = make_server(client, write_map(tmp_path, content))
+
+    async def scenario(session):
+        return await call(session, "write_object_by_alias", {"alias": "broken", "value": 1})
+
+    result = with_session(server, scenario)
+    assert result["success"] is False
+    assert result["meta"]["outcome"] == "not_sent"
+    assert result["meta"]["request_sent"] is False
+    assert client.calls == []

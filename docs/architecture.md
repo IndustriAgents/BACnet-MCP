@@ -111,6 +111,12 @@ unknown, not success. Failure to persist a result is logged and marked
 Audit records omit payloads and credentials. Manage file retention externally;
 this append-only log is not a tamper-proof external audit service.
 
+Policy documents are read only from regular files, with a 64 KiB read bound and
+at most 16 JSON nesting levels. Duplicate fields are rejected. The size bound
+still applies if a file grows during the read. Audit destinations must also be
+regular files; devices and pipes are refused before any audit record is written.
+A FIFO cannot block policy loading or audit admission while waiting for a peer.
+
 ## Protocol capability limits
 
 BACnet/IP discovery, property reads and writes use bacpypes3. Broadcast discovery requires the right local interface and network routing. An acknowledged BACnet write does not prove the physical process reached the requested state.
@@ -139,3 +145,43 @@ consolidated routes, unknown/mixed arguments, legacy-policy bypass, independent
 admission state, durable intent failure and MCP error envelopes. npm tests
 check the bundled version, argument boundaries, exit status and missing-uv
 errors. See [release.md](release.md) for the registry workflow.
+
+## Request and failure bounds
+
+Every call is bounded before selector forwarding, JSON encoding, schema
+validation, policy admission or device I/O. Contract limits are 32 nesting
+levels, 10,000 entries per container and 50,000 total values; the deployment
+policy additionally bounds serialized request bytes. Non-finite numbers,
+non-JSON values, invalid Unicode and non-string object keys are rejected.
+These checks bound work after the MCP SDK has decoded the transport frame.
+
+Consolidated selector modes validate their complete contract schemas. Legacy
+names and direct routes retain their established native validation and coercion,
+including their error details; unknown top-level keys are always refused.
+MCP input-model validation runs before the handler. A validation exception
+raised inside a handler is an execution failure and cannot prove a control was
+not sent. Unexpected execution failures preserve an uncertain outcome; native
+send tracking remains authoritative when available. Neither case adds retries.
+
+An audit-result failure adds `meta.audit_error` to the same envelope used for
+both text content and structured content, including text-only native results.
+Cancellation releases admission capacity and retains an unknown audit outcome
+when no result was observed.
+
+### Remaining native boundary
+
+`application/helpers.py` still recognizes `bacpypes3.apdu.ErrorRejectAbortNack`
+when formatting native failures. Consequently this helper is not yet fully
+independent of the BACnet library, unlike OPCUA-MCP's normalized feature ports.
+The client adapter owns native operations and send/outcome accounting.
+
+## Normalized BACnet operation port
+
+The server composes a `BACnetOperations` adapter around its native client for
+application calls. That adapter converts bacpypes3 error/reject/abort PDUs,
+which inherit from `BaseException`, into the domain error vocabulary while
+allowing cancellation to propagate. Application and domain modules no longer
+import bacpypes3 types; lifecycle ownership stays with the server's client.
+A generic client error after a write cannot establish non-dispatch. Only an
+explicit `WriteError` outcome or local argument/map validation can report
+`not_sent`; invalid alias maps now include that outcome and `request_sent:false`.

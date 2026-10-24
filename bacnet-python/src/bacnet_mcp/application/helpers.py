@@ -3,8 +3,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from bacpypes3.apdu import ErrorRejectAbortNack
-
 from bacnet_mcp.domain.errors import (
     MAY_HAVE_BEEN_APPLIED,
     NOT_SENT,
@@ -32,15 +30,15 @@ async def guarded(
         return await action()
     except WriteError as exc:
         return fail(str(exc), {**base, **write_outcome(exc.outcome, exc.request_sent)})
-    except (ArgumentError, BACnetClientError) as exc:
+    except ArgumentError as exc:
         return fail(str(exc), {**base, **(write_outcome(NOT_SENT, False) if write else {})})
-    except ErrorRejectAbortNack as exc:
+    except BACnetClientError as exc:
         if write:
             return fail(
-                f"BACnet failure: {exc}: {MAY_HAVE_BEEN_APPLIED}",
+                f"{exc}: {MAY_HAVE_BEEN_APPLIED}",
                 {**base, **write_outcome(UNKNOWN, True)},
             )
-        return fail(f"BACnet failure: {exc}", base)
+        return fail(str(exc), base)
     except Exception as exc:
         log.exception("%s failed", tool)
         if write:

@@ -13,10 +13,10 @@ from typing import Any
 
 import anyio
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.stdio import stdio_server
 from pydantic import ValidationError
 
+from .adapters.operations import BACnetOperations
 from .bacnet_client import NOT_SENT, BACnetClient, request_cancel_scope
 from .tools import ObjectMap, ToolConfig, ToolResources, fail, register_tools, write_outcome
 
@@ -109,14 +109,16 @@ class _BACnetFastMCP(FastMCP):
                     _refusal_meta(tool),
                 )
                 return tool.fn_metadata.convert_result(result)
-        try:
-            return await super().call_tool(name, arguments)
-        except ToolError as exc:
-            tool = self._tool_manager.get_tool(name)
-            if tool is None or not isinstance(exc.__cause__, ValidationError):
-                raise
-            result = fail(describe_validation_error(exc.__cause__), _refusal_meta(tool))
-            return tool.fn_metadata.convert_result(result)
+            # Validate before entering the handler. A ValidationError raised by
+            # device/result processing later cannot prove that nothing was sent.
+            try:
+                tool.fn_metadata.arg_model.model_validate(
+                    tool.fn_metadata.pre_parse_json(arguments)
+                )
+            except ValidationError as exc:
+                result = fail(describe_validation_error(exc), _refusal_meta(tool))
+                return tool.fn_metadata.convert_result(result)
+        return await super().call_tool(name, arguments)
 
     #: Called once when the client's stdin reaches end of file.
     on_client_disconnect: Callable[[], None] | None = None
@@ -219,7 +221,7 @@ class BACnetMCPServer:
         self._server._mcp_server.version = package_version("industriagents-bacnet-mcp")
         self._server.on_client_disconnect = getattr(self.client, "client_disconnected", None)
         resources = ToolResources(
-            client=self.client,
+            client=BACnetOperations(self.client),
             config=self.tool_config,
             object_map=self.object_map,
         )

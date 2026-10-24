@@ -12,7 +12,6 @@ from bacnet_mcp.domain.model import (
     check_target,
     check_text,
     check_value,
-    fail,
 )
 
 
@@ -56,7 +55,7 @@ class WriteOperations:
             name = check_text("alias", alias)
             spec = self.resources.object_map.get(name)
             if self.resources.object_map.error:
-                return fail(self.resources.object_map.error, {"tool": "write_object_by_alias"})
+                raise ArgumentError(self.resources.object_map.error)
             if spec is None:
                 raise ArgumentError(f"Unknown alias {name!r}")
             target = alias_target(name, spec)
