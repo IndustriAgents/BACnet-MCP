@@ -54,3 +54,32 @@ Run `python3 scripts/mcp_workspace.py verify BACnet-MCP` from the workspace, or
 use the repository's CI commands independently. Package smoke checks remove
 inherited deployment settings, bind only loopback, compare complete tool metadata
 and call only local diagnostics plus an invalid selector. No live device is used.
+
+## Second review: reply identity (2026-10-25)
+
+The pinned [BACpypes3 ReadProperty service](https://raw.githubusercontent.com/JoelBender/BACpypes3/v0.0.110/bacpypes3/service/object.py)
+returns object, property and optional array references in its ACK. Its wildcard
+Device request is resolved to the actual Device object identifier. Our adapter
+previously checked the ACK class but decoded its value using the requested type
+without validating those echoed references. It also compared only the instance
+number of the wildcard identity value, allowing another object type with the
+same number to satisfy write preflight.
+
+The adapter now checks all three ACK references before decoding ordinary reads.
+Identity preflight requires a Device identifier with the expected instance and
+matching actual-device ACK reference. Invalid ACKs invalidate cached identity and
+fail closed; only an explicit native refusal of wildcard access uses the existing
+directed Who-Is fallback. No malformed ACK is retried or promoted to success.
+Eight loopback UDP regressions cover wrong references, missing array index, and
+zero write dispatch after corrupted identity replies. Existing correct device
+and property reads retain their behavior. Devices returning invalid wildcard
+ACKs may now be refused instead of accepted.
+
+Prioritized remaining roadmap:
+
+1. Bound and expire discovered-device caches, preserving explicit write identity rechecks.
+2. Add bounded ReadPropertyMultiple with per-property errors and APDU-size handling.
+3. Design COV lifecycle/renewal and loss reporting before adding monitoring tools.
+
+BACnet/SC/MS/TP and certification still require their separate transport and
+hardware evidence; this review does not add those capabilities.

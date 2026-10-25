@@ -187,3 +187,7 @@ The [protocol research and capability matrix](protocol-research.md) records the
 data shapes in `contract/tools.json`; MCP tests validate actual results. Existing
 local diagnostics now expose backend support separately from native enablement
 and device verification. See the matrix for policy migration details.
+
+## Observation integrity review
+
+ReadProperty ACKs now require matching object/property/index references, and malformed wildcard device identity cannot authorize writes. See [protocol research](protocol-research.md) for evidence, limits and the prioritized roadmap.
