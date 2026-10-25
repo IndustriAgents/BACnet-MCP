@@ -304,3 +304,5 @@ anything real, and report vulnerabilities privately as described there
 See [protocol research and capability matrix](docs/protocol-research.md) for source evidence,
 implemented tool coverage, policy changes, test requirements and remaining limitations.
 The local status tool exposes `capabilities`; backend support does not establish device permission or reachability.
+
+ReadProperty ACKs now require matching object/property/index references, and malformed wildcard device identity cannot authorize writes. Details and the remaining roadmap are in [protocol research](docs/protocol-research.md).

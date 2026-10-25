@@ -33,6 +33,7 @@ from bacpypes3.apdu import (
     WritePropertyRequest,
 )
 from bacpypes3.app import Application
+from bacpypes3.basetypes import PropertyIdentifier
 from bacpypes3.constructeddata import Any as AnyValue
 from bacpypes3.constructeddata import AnyAtomic, Array, Choice, Sequence
 from bacpypes3.errors import PropertyError
@@ -697,19 +698,28 @@ class BACnetClient:
             raise BACnetClientError(f"no BACnet device answered at {address}: {exc}") from None
         except DeviceRefused:
             response = None
-        if isinstance(response, ReadPropertyACK):
+        if response is not None:
             try:
+                if not isinstance(response, ReadPropertyACK):
+                    raise BACnetClientError("Unexpected reply while checking device identity")
                 found = response.propertyValue.cast_out(ObjectIdentifier)
-            except Exception:
-                found = None
-            if found is not None:
+                if found[0] != ObjectIdentifier(("device", 0))[0]:
+                    raise BACnetClientError(
+                        "Identity reply did not contain a device object identifier"
+                    )
                 if found[1] != device_id:
-                    self._addresses.pop(device_id, None)
                     raise BACnetClientError(
                         f"the device at {address} is device {found[1]}, not {device_id}"
                     )
-                app.who_is(device_id, device_id, addr, timeout=self._resolve_timeout)
-                return
+                # Wildcard requests resolve to the actual device object in the ACK.
+                self._check_read_ack(response, found, PropertyIdentifier("objectIdentifier"), None)
+            except Exception as exc:
+                self._addresses.pop(device_id, None)
+                if isinstance(exc, BACnetClientError):
+                    raise
+                raise BACnetClientError("Could not decode the device identity reply") from exc
+            app.who_is(device_id, device_id, addr, timeout=self._resolve_timeout)
+            return
         i_ams = await app.who_is(device_id, device_id, addr, timeout=self._resolve_timeout)
         if not i_ams:
             self._addresses.pop(device_id, None)
@@ -963,6 +973,21 @@ class BACnetClient:
         }
         return (value, meta)
 
+    @staticmethod
+    def _check_read_ack(
+        response: ReadPropertyACK, objid: Any, prop: Any, array_index: int | None
+    ) -> None:
+        """Invoke-id correlation alone cannot establish which property was returned."""
+        if (
+            response.objectIdentifier != objid
+            or response.propertyIdentifier != prop
+            or response.propertyArrayIndex != array_index
+        ):
+            raise BACnetClientError(
+                "ReadProperty acknowledgement does not match the requested object, "
+                "property or array index"
+            )
+
     async def _read_at(
         self,
         addr: Address,
@@ -990,6 +1015,7 @@ class BACnetClient:
             raise BACnetClientError(
                 f"unexpected response to ReadProperty: {type(response).__name__}"
             )
+        self._check_read_ack(response, objid, prop, array_index)
         property_type = self._property_type(vendor_info, objid, prop, array_index)
         try:
             value = response.propertyValue.cast_out(property_type)
