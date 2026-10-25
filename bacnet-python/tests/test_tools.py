@@ -6,6 +6,7 @@ import asyncio
 import json
 import math
 from importlib.metadata import version
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -20,6 +21,7 @@ from helpers import (
     mock_object,
     running_mock,
 )
+from jsonschema import Draft202012Validator
 from mcp import ClientSession
 from mcp.shared.memory import (
     create_client_server_memory_streams,
@@ -30,7 +32,24 @@ from bacnet_mcp.bacnet_client import BACnetClient, BACnetClientError, BACnetConf
 from bacnet_mcp.server import BACnetMCPServer
 from bacnet_mcp.tools import ToolConfig
 
-TOOLS = ["discover_devices", "list_objects", "ping", "read_property", "write_property"]
+CONTRACT = json.loads((Path(__file__).resolve().parents[2] / "contract/tools.json").read_text())
+
+
+def validate_result(name, result):
+    canonical = CONTRACT["legacy"].get(name, name)
+    definition = next((tool for tool in CONTRACT["tools"] if tool["name"] == canonical), None)
+    if definition is not None:
+        Draft202012Validator(definition["outputSchema"]).validate(result)
+
+
+TOOLS = [
+    "browse_objects",
+    "discover_devices",
+    "list_objects",
+    "ping",
+    "read_property",
+    "write_property",
+]
 
 
 class FakeClient:
@@ -125,6 +144,7 @@ async def call(session, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     envelope = json.loads(result.content[0].text)
     assert set(envelope) == {"success", "data", "error", "meta"}
     assert result.structuredContent == envelope
+    validate_result(name, envelope)
     return envelope
 
 
@@ -286,7 +306,7 @@ def test_valid_calls_reach_the_client():
     ("error", "message"),
     [
         (BACnetClientError("BACnet error: object: unknown-object"), "unknown-object"),
-        (RuntimeError("boom"), "RuntimeError: boom"),
+        (RuntimeError("boom"), "Unexpected error while executing tool"),
         # bacpypes3 PDUs are BaseExceptions; one must never escape a tool
         (AbortPDU(reason="noResponse"), "BACnet failure: no-response"),
     ],
@@ -701,6 +721,7 @@ def test_tool_calls_see_the_mcp_requests_cancel_scope():
     server = make_server()
     seen = {}
 
+    original_ping = server.mcp._tool_manager.get_tool("ping").fn
     server.mcp.remove_tool("ping")
 
     @server.mcp.tool(name="ping")
@@ -708,7 +729,7 @@ def test_tool_calls_see_the_mcp_requests_cancel_scope():
         """Report the request cancel scope the server captured."""
         scope = request_cancel_scope.get()
         seen["scope"] = scope
-        return {"success": True, "data": None, "error": None, "meta": {}}
+        return await original_ping()
 
     async def scenario(session):
         return await session.call_tool("ping", {})

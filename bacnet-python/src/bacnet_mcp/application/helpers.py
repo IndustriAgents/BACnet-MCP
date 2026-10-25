@@ -40,10 +40,10 @@ async def guarded(
             )
         return fail(str(exc), base)
     except Exception as exc:
-        log.exception("%s failed", tool)
+        log.error("%s failed (%s)", tool, type(exc).__name__)
         if write:
             return fail(
-                f"{type(exc).__name__}: {exc}: {MAY_HAVE_BEEN_APPLIED}",
+                f"Unexpected error while executing tool: {MAY_HAVE_BEEN_APPLIED}",
                 {**base, **write_outcome(UNKNOWN, True)},
             )
-        return fail(f"{type(exc).__name__}: {exc}", base)
+        return fail("Unexpected error while executing tool", base)

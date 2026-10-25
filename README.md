@@ -1,6 +1,6 @@
 > **0.3.0 package and tool migration:** Install `industriagents-bacnet-mcp`
 > from npm (requires uv) or PyPI; the command remains `bacnet-mcp`.
-> The advertised catalog now contains **5 tools**. Older tool names in
+> The advertised catalog now contains **6 tools**. Older tool names in
 > the examples below remain compatibility calls. See the
 > [architecture and canonical tool guide](docs/architecture.md)
 > and [release guide](docs/release.md).
@@ -25,6 +25,8 @@ Early, but real: the tools speak BACnet/IP. What works today:
 - **Discovery**: `discover_devices` sends Who-Is (a global broadcast, or
   directed at one address) and returns the devices that answer with I-Am,
   plus each device's name, vendor and model read from its device object.
+- **Object inventory**: `browse_objects` reads a bounded page of the device's
+  object list, with a continuation index and partial-failure reporting.
 - **Reads**: `read_property` / `read_object_by_alias` send ReadProperty and
   return the decoded value (numbers, strings, enumeration names, lists; a
   REAL that is NaN or infinite comes back as `"NaN"`, `"Infinity"` or
@@ -234,6 +236,7 @@ An object map is a JSON object keyed by alias. `device`, `object_type` and
 | `discover_devices` | Who-Is (broadcast, or to `address`), optional `low_limit`/`high_limit`, waits `timeout_ms`; returns each device's instance, address, vendor id, name, vendor and model. Names get at most 10 s more; `meta.details` says `complete` or `partial` |
 | `read_property` | ReadProperty of `device_id` / `object_type` / `object_instance` / `property_id` (default `present-value`), optional `array_index` and `address` |
 | `write_property` | WriteProperty of `value` with optional `priority` (1–16 except 6; `null`, or the string `"null"`, relinquishes); sent at most once; refused unless `BACNET_WRITES_ENABLED=true` |
+| `browse_objects` | Read a page of the device object list: `device_id`, optional `address`, `start_index`, `limit` (1–100), `timeout_ms` (100–60000); returns continuation and completeness metadata |
 | `list_objects` | Lists the aliases loaded from `OBJECT_MAP_FILE` |
 | `read_object_by_alias` | `read_property` for an alias from the object map |
 | `write_object_by_alias` | `write_property` for an alias, at the alias's priority; refused unless writes are enabled |
@@ -295,3 +298,9 @@ anything real, and report vulnerabilities privately as described there
 ## License
 
 [MIT](LICENSE) © 2026 IndustriAgents
+
+## Protocol support and verification
+
+See [protocol research and capability matrix](docs/protocol-research.md) for source evidence,
+implemented tool coverage, policy changes, test requirements and remaining limitations.
+The local status tool exposes `capabilities`; backend support does not establish device permission or reachability.
