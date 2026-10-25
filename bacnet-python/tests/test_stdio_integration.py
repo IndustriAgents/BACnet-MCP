@@ -28,8 +28,19 @@ from typing import IO, Any
 import anyio
 import pytest
 from helpers import ENV_KEYS, MOCK_DEVICE_ID, MOCK_SCRIPT, free_udp_port
+from jsonschema import Draft202012Validator
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+CONTRACT = json.loads((Path(__file__).resolve().parents[2] / "contract/tools.json").read_text())
+
+
+def validate_result(name, result):
+    canonical = CONTRACT["legacy"].get(name, name)
+    definition = next((tool for tool in CONTRACT["tools"] if tool["name"] == canonical), None)
+    if definition is not None:
+        Draft202012Validator(definition["outputSchema"]).validate(result)
+
 
 SERVER_COMMAND = [sys.executable, "-m", "bacnet_mcp.cli"]
 TIMEOUT = 30.0
@@ -132,7 +143,9 @@ def server_env(writes: bool) -> dict[str, str]:
 async def call(session: ClientSession, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     result = await session.call_tool(name, arguments)
     assert result.isError is (json.loads(result.content[0].text).get("success") is False), result
-    return json.loads(result.content[0].text)
+    value = json.loads(result.content[0].text)
+    validate_result(name, value)
+    return value
 
 
 def target(object_type: str, instance: int, **extra: Any) -> dict[str, Any]:
@@ -165,7 +178,7 @@ def test_mcp_sdk_session_against_the_mock(tmp_path, caplog):
 
         async def scenario(session: ClientSession):
             tools = (await session.list_tools()).tools
-            assert len(tools) == 5 and all(t.description for t in tools)
+            assert len(tools) == 6 and all(t.description for t in tools)
 
             found = await call(session, "discover_devices", {"address": address})
             assert found["success"], found
@@ -308,6 +321,7 @@ def test_stdout_carries_only_json_rpc(tmp_path):
             tool_call(7, "read_object_by_alias", {"alias": "zone1"}),
             tool_call(8, "write_object_by_alias", {"alias": "damper", "value": None}),
             tool_call(9, "ping", {}),
+            tool_call(10, "browse_objects", {"device_id": MOCK_DEVICE_ID, "address": address}),
         ]
         env = isolated_env(
             **{
@@ -325,7 +339,7 @@ def test_stdout_carries_only_json_rpc(tmp_path):
     called = {r["params"]["name"] for r in requests if r.get("method") == "tools/call"}
     listed = {t["name"] for t in responses[2]["result"]["tools"]}
     assert listed == called - {"read_object_by_alias", "write_object_by_alias"}
-    for request_id in range(3, 10):
+    for request_id in range(3, 11):
         envelope = responses[request_id]["result"]["structuredContent"]
         assert envelope["success"] is True, envelope
     # DEBUG logging was on, and all of it went to stderr.
@@ -349,7 +363,7 @@ def test_the_server_starts_without_a_device(tmp_path):
     returncode, lines, responses, stderr = raw_session(SERVER_COMMAND, env, tmp_path, requests)
     assert returncode == 0, stderr
     assert responses[1]["result"]["serverInfo"]["name"] == "BACnet MCP Server"
-    assert len(responses[2]["result"]["tools"]) == 5
+    assert len(responses[2]["result"]["tools"]) == 6
     read = responses[3]["result"]["structuredContent"]
     assert read["success"] is False and "no BACnet device answered" in read["error"]
     write = responses[4]["result"]["structuredContent"]
@@ -637,7 +651,7 @@ def test_calls_sent_just_before_eof_are_answered_but_writes_are_not_sent():
     assert result.returncode == 0, result.stderr
     assert replies[2]["result"]["structuredContent"]["success"] is True
     assert "objects" in replies[3]["result"]["structuredContent"]["data"]
-    assert len(replies[5]["result"]["tools"]) == 5
+    assert len(replies[5]["result"]["tools"]) == 6
     if 4 in replies:  # the stopped write answers not_sent
         meta = replies[4]["result"]["structuredContent"]["meta"]
         assert (meta["outcome"], meta["request_sent"]) == ("not_sent", False)

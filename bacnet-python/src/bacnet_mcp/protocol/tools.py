@@ -93,6 +93,25 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
             device_id, object_type, object_instance, property_id, array_index, address
         )
 
+    @register(READ_ONLY)
+    async def browse_objects(
+        device_id: StrictInt,
+        address: str | None = None,
+        start_index: StrictInt = 1,
+        limit: StrictInt = 50,
+        timeout_ms: StrictInt = 10000,
+    ) -> Envelope:
+        """Read one bounded page of a device's object-list, without a configured alias map.
+
+        Reads array index 0 for the length, then at most limit entries (1-100).
+        start_index starts at 1; resume with meta.next_index. timeout_ms bounds
+        the entire page (100-60000). A failed page retains partial objects and
+        reports success:false. complete means no entries remain. Device changes
+        between pages are possible: this is not an atomic snapshot. Inspect each
+        object's properties with read_property to learn units, flags and bounds.
+        """
+        return await operations.browse_objects(device_id, address, start_index, limit, timeout_ms)
+
     @register(WRITES_DEVICE)
     async def write_property(
         device_id: StrictInt,

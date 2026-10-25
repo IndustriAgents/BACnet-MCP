@@ -174,7 +174,55 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "device_id": {
+                    "type": "integer"
+                  },
+                  "address": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "object_type": {
+                    "type": "string"
+                  },
+                  "object_instance": {
+                    "type": "integer"
+                  },
+                  "property_id": {
+                    "type": "string"
+                  },
+                  "array_index": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "value": {},
+                  "alias": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "device_id",
+                  "address",
+                  "object_type",
+                  "object_instance",
+                  "property_id",
+                  "array_index",
+                  "value"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -185,7 +233,67 @@
             "type": "object"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "success": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "type": "object",
+                  "properties": {
+                    "device_id": {
+                      "type": "integer"
+                    },
+                    "address": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "object_type": {
+                      "type": "string"
+                    },
+                    "object_instance": {
+                      "type": "integer"
+                    },
+                    "property_id": {
+                      "type": "string"
+                    },
+                    "array_index": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "value": {},
+                    "alias": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "device_id",
+                    "address",
+                    "object_type",
+                    "object_instance",
+                    "property_id",
+                    "array_index",
+                    "value"
+                  ]
+                },
+                "error": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
       }
     },
     {
@@ -446,7 +554,66 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "device_id": {
+                    "type": "integer"
+                  },
+                  "address": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "object_type": {
+                    "type": "string"
+                  },
+                  "object_instance": {
+                    "type": "integer"
+                  },
+                  "property_id": {
+                    "type": "string"
+                  },
+                  "array_index": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "value": {},
+                  "alias": {
+                    "type": "string"
+                  },
+                  "priority": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "acknowledged": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "device_id",
+                  "address",
+                  "object_type",
+                  "object_instance",
+                  "property_id",
+                  "array_index",
+                  "value",
+                  "priority",
+                  "acknowledged"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -457,7 +624,280 @@
             "type": "object"
           }
         },
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "success": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "type": "object",
+                  "properties": {
+                    "device_id": {
+                      "type": "integer"
+                    },
+                    "address": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "object_type": {
+                      "type": "string"
+                    },
+                    "object_instance": {
+                      "type": "integer"
+                    },
+                    "property_id": {
+                      "type": "string"
+                    },
+                    "array_index": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "value": {},
+                    "alias": {
+                      "type": "string"
+                    },
+                    "priority": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "acknowledged": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "device_id",
+                    "address",
+                    "object_type",
+                    "object_instance",
+                    "property_id",
+                    "array_index",
+                    "value",
+                    "priority",
+                    "acknowledged"
+                  ]
+                },
+                "error": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "browse_objects",
+      "description": "Read a bounded page of a device's object-list through ReadProperty array indexing, without an alias map.\n\nReads at most limit entries after the length at index 0. Start at 1 and resume with meta.next_index; meta.complete indicates the end. A timeout or entry failure retains partial data and sets success:false. The whole page shares timeout_ms. Object lists may change between calls; this is not a snapshot. Use read_property on discovered objects for units, status-flags and engineering limits.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4194302,
+            "description": "BACnet device instance."
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional IPv4 device address, with optional port. Identity is checked."
+          },
+          "start_index": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295,
+            "default": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 50
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 60000,
+            "default": 10000
+          }
+        },
+        "required": [
+          "device_id"
+        ],
         "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "device_id": {
+                    "type": "integer"
+                  },
+                  "address": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "total_objects": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "objects": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "array_index": {
+                          "type": "integer"
+                        },
+                        "object_identifier": {}
+                      },
+                      "required": [
+                        "array_index",
+                        "object_identifier"
+                      ]
+                    },
+                    "maxItems": 100
+                  }
+                },
+                "required": [
+                  "device_id",
+                  "address",
+                  "total_objects",
+                  "objects"
+                ]
+              }
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object",
+            "properties": {
+              "complete": {
+                "type": "boolean"
+              },
+              "next_index": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "returned": {
+                "type": "integer"
+              },
+              "snapshot": {
+                "const": false
+              }
+            }
+          }
+        },
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "success": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "type": "object",
+                  "properties": {
+                    "device_id": {
+                      "type": "integer"
+                    },
+                    "address": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "total_objects": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "objects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "array_index": {
+                            "type": "integer"
+                          },
+                          "object_identifier": {}
+                        },
+                        "required": [
+                          "array_index",
+                          "object_identifier"
+                        ]
+                      },
+                      "maxItems": 100
+                    }
+                  },
+                  "required": [
+                    "device_id",
+                    "address",
+                    "total_objects",
+                    "objects"
+                  ]
+                },
+                "error": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
       }
     },
     {
@@ -533,7 +973,67 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "devices": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "device_id": {
+                          "type": "integer"
+                        },
+                        "address": {
+                          "type": "string"
+                        },
+                        "vendor_id": {
+                          "type": "integer"
+                        },
+                        "max_apdu_length": {
+                          "type": "integer"
+                        },
+                        "segmentation": {},
+                        "name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "vendor": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "model": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "details_partial": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "device_id",
+                        "address"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "devices"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -544,7 +1044,79 @@
             "type": "object"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "success": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "type": "object",
+                  "properties": {
+                    "devices": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "device_id": {
+                            "type": "integer"
+                          },
+                          "address": {
+                            "type": "string"
+                          },
+                          "vendor_id": {
+                            "type": "integer"
+                          },
+                          "max_apdu_length": {
+                            "type": "integer"
+                          },
+                          "segmentation": {},
+                          "name": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "vendor": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "model": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "details_partial": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "device_id",
+                          "address"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "devices"
+                  ]
+                },
+                "error": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
       },
       "annotations": {
         "readOnlyHint": true,
@@ -572,7 +1144,53 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "objects": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "alias": {
+                          "type": "string"
+                        },
+                        "device": {},
+                        "address": {},
+                        "object_type": {},
+                        "object_instance": {},
+                        "property_id": {},
+                        "priority": {},
+                        "description": {}
+                      },
+                      "required": [
+                        "alias",
+                        "device",
+                        "address",
+                        "object_type",
+                        "object_instance",
+                        "property_id",
+                        "priority",
+                        "description"
+                      ]
+                    }
+                  },
+                  "count": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "objects",
+                  "count"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -583,7 +1201,65 @@
             "type": "object"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "success": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "type": "object",
+                  "properties": {
+                    "objects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "alias": {
+                            "type": "string"
+                          },
+                          "device": {},
+                          "address": {},
+                          "object_type": {},
+                          "object_instance": {},
+                          "property_id": {},
+                          "priority": {},
+                          "description": {}
+                        },
+                        "required": [
+                          "alias",
+                          "device",
+                          "address",
+                          "object_type",
+                          "object_instance",
+                          "property_id",
+                          "priority",
+                          "description"
+                        ]
+                      }
+                    },
+                    "count": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "objects",
+                    "count"
+                  ]
+                },
+                "error": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
       },
       "annotations": {
         "readOnlyHint": true,
@@ -611,7 +1287,111 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "connection": {
+                    "type": "object"
+                  },
+                  "capabilities": {
+                    "type": "object",
+                    "properties": {
+                      "protocol": {
+                        "type": "string"
+                      },
+                      "backend": {
+                        "type": "string"
+                      },
+                      "simulated": {
+                        "type": "boolean"
+                      },
+                      "scope": {
+                        "const": "backend_support"
+                      },
+                      "device_verified": {
+                        "const": false
+                      },
+                      "operations": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "object",
+                          "properties": {
+                            "supported": {
+                              "type": "boolean"
+                            },
+                            "enabled": {
+                              "type": "boolean",
+                              "description": "Native config gate only; not policy, reachability or device permission."
+                            },
+                            "reason": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "supported",
+                            "enabled"
+                          ]
+                        }
+                      },
+                      "prerequisites": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "limitations": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "required": [
+                      "protocol",
+                      "backend",
+                      "simulated",
+                      "scope",
+                      "device_verified",
+                      "operations",
+                      "prerequisites",
+                      "limitations"
+                    ]
+                  },
+                  "writes_enabled": {
+                    "type": "boolean"
+                  },
+                  "object_map": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "object_aliases": {
+                    "type": "integer"
+                  },
+                  "object_map_error": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "connection",
+                  "capabilities",
+                  "writes_enabled",
+                  "object_map",
+                  "object_aliases",
+                  "object_map_error"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -622,7 +1402,123 @@
             "type": "object"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "success": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "type": "object",
+                  "properties": {
+                    "connection": {
+                      "type": "object"
+                    },
+                    "capabilities": {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "type": "string"
+                        },
+                        "backend": {
+                          "type": "string"
+                        },
+                        "simulated": {
+                          "type": "boolean"
+                        },
+                        "scope": {
+                          "const": "backend_support"
+                        },
+                        "device_verified": {
+                          "const": false
+                        },
+                        "operations": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean",
+                                "description": "Native config gate only; not policy, reachability or device permission."
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ]
+                          }
+                        },
+                        "prerequisites": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "limitations": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "protocol",
+                        "backend",
+                        "simulated",
+                        "scope",
+                        "device_verified",
+                        "operations",
+                        "prerequisites",
+                        "limitations"
+                      ]
+                    },
+                    "writes_enabled": {
+                      "type": "boolean"
+                    },
+                    "object_map": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "object_aliases": {
+                      "type": "integer"
+                    },
+                    "object_map_error": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "connection",
+                    "capabilities",
+                    "writes_enabled",
+                    "object_map",
+                    "object_aliases",
+                    "object_map_error"
+                  ]
+                },
+                "error": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
       },
       "annotations": {
         "readOnlyHint": true,
@@ -637,7 +1533,8 @@
         "address": "read_property",
         "alias": "read_object_by_alias"
       },
-      "legacyHandler": "read_property"
+      "legacyHandler": "read_property",
+      "resultShape": "read_property"
     },
     "write_property": {
       "selector": "target",
@@ -645,16 +1542,24 @@
         "address": "write_property",
         "alias": "write_object_by_alias"
       },
-      "legacyHandler": "write_property"
+      "legacyHandler": "write_property",
+      "resultShape": "write_property"
     },
     "discover_devices": {
-      "handler": "discover_devices"
+      "handler": "discover_devices",
+      "resultShape": "discover_devices"
     },
     "list_objects": {
-      "handler": "list_objects"
+      "handler": "list_objects",
+      "resultShape": "list_objects"
     },
     "ping": {
-      "handler": "ping"
+      "handler": "ping",
+      "resultShape": "ping"
+    },
+    "browse_objects": {
+      "handler": "browse_objects",
+      "resultShape": "browse_objects"
     }
   },
   "legacy": {
@@ -919,6 +1824,46 @@
       "title": "pingArguments",
       "type": "object",
       "additionalProperties": false
+    },
+    "browse_objects": {
+      "type": "object",
+      "properties": {
+        "device_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4194302,
+          "description": "BACnet device instance."
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Optional IPv4 device address, with optional port. Identity is checked."
+        },
+        "start_index": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "default": 1
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 60000,
+          "default": 10000
+        }
+      },
+      "required": [
+        "device_id"
+      ],
+      "additionalProperties": false
     }
   },
   "resultSchema": {
@@ -953,5 +1898,337 @@
     "maxNestingDepth": 32,
     "maxContainerItems": 10000,
     "maxTotalValues": 50000
+  },
+  "resultShapes": {
+    "read_property": {
+      "type": "object",
+      "properties": {
+        "device_id": {
+          "type": "integer"
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "object_type": {
+          "type": "string"
+        },
+        "object_instance": {
+          "type": "integer"
+        },
+        "property_id": {
+          "type": "string"
+        },
+        "array_index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "value": {},
+        "alias": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_id",
+        "address",
+        "object_type",
+        "object_instance",
+        "property_id",
+        "array_index",
+        "value"
+      ]
+    },
+    "write_property": {
+      "type": "object",
+      "properties": {
+        "device_id": {
+          "type": "integer"
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "object_type": {
+          "type": "string"
+        },
+        "object_instance": {
+          "type": "integer"
+        },
+        "property_id": {
+          "type": "string"
+        },
+        "array_index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "value": {},
+        "alias": {
+          "type": "string"
+        },
+        "priority": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "acknowledged": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "device_id",
+        "address",
+        "object_type",
+        "object_instance",
+        "property_id",
+        "array_index",
+        "value",
+        "priority",
+        "acknowledged"
+      ]
+    },
+    "browse_objects": {
+      "type": "object",
+      "properties": {
+        "device_id": {
+          "type": "integer"
+        },
+        "address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "total_objects": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "array_index": {
+                "type": "integer"
+              },
+              "object_identifier": {}
+            },
+            "required": [
+              "array_index",
+              "object_identifier"
+            ]
+          },
+          "maxItems": 100
+        }
+      },
+      "required": [
+        "device_id",
+        "address",
+        "total_objects",
+        "objects"
+      ]
+    },
+    "discover_devices": {
+      "type": "object",
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "device_id": {
+                "type": "integer"
+              },
+              "address": {
+                "type": "string"
+              },
+              "vendor_id": {
+                "type": "integer"
+              },
+              "max_apdu_length": {
+                "type": "integer"
+              },
+              "segmentation": {},
+              "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "vendor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "details_partial": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "device_id",
+              "address"
+            ]
+          }
+        }
+      },
+      "required": [
+        "devices"
+      ]
+    },
+    "list_objects": {
+      "type": "object",
+      "properties": {
+        "objects": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "alias": {
+                "type": "string"
+              },
+              "device": {},
+              "address": {},
+              "object_type": {},
+              "object_instance": {},
+              "property_id": {},
+              "priority": {},
+              "description": {}
+            },
+            "required": [
+              "alias",
+              "device",
+              "address",
+              "object_type",
+              "object_instance",
+              "property_id",
+              "priority",
+              "description"
+            ]
+          }
+        },
+        "count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "objects",
+        "count"
+      ]
+    },
+    "ping": {
+      "type": "object",
+      "properties": {
+        "connection": {
+          "type": "object"
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "protocol": {
+              "type": "string"
+            },
+            "backend": {
+              "type": "string"
+            },
+            "simulated": {
+              "type": "boolean"
+            },
+            "scope": {
+              "const": "backend_support"
+            },
+            "device_verified": {
+              "const": false
+            },
+            "operations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "supported": {
+                    "type": "boolean"
+                  },
+                  "enabled": {
+                    "type": "boolean",
+                    "description": "Native config gate only; not policy, reachability or device permission."
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "supported",
+                  "enabled"
+                ]
+              }
+            },
+            "prerequisites": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "limitations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "protocol",
+            "backend",
+            "simulated",
+            "scope",
+            "device_verified",
+            "operations",
+            "prerequisites",
+            "limitations"
+          ]
+        },
+        "writes_enabled": {
+          "type": "boolean"
+        },
+        "object_map": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "object_aliases": {
+          "type": "integer"
+        },
+        "object_map_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "connection",
+        "capabilities",
+        "writes_enabled",
+        "object_map",
+        "object_aliases",
+        "object_map_error"
+      ]
+    }
   }
 }

@@ -47,6 +47,7 @@ TypeScript implementation: npm carries the same wheel as the PyPI release.
 |---|---|---|
 | `read_property` | `address`, `alias` | Read/local |
 | `write_property` | `address`, `alias` | Changes state or consumes events |
+| `browse_objects` | No mode selector | Read/local, bounded object-list page |
 | `discover_devices` | No mode selector | Read/local |
 | `list_objects` | No mode selector | Read/local |
 | `ping` | No mode selector | Read/local |
@@ -168,13 +169,6 @@ both text content and structured content, including text-only native results.
 Cancellation releases admission capacity and retains an unknown audit outcome
 when no result was observed.
 
-### Remaining native boundary
-
-`application/helpers.py` still recognizes `bacpypes3.apdu.ErrorRejectAbortNack`
-when formatting native failures. Consequently this helper is not yet fully
-independent of the BACnet library, unlike OPCUA-MCP's normalized feature ports.
-The client adapter owns native operations and send/outcome accounting.
-
 ## Normalized BACnet operation port
 
 The server composes a `BACnetOperations` adapter around its native client for
@@ -185,3 +179,11 @@ import bacpypes3 types; lifecycle ownership stays with the server's client.
 A generic client error after a write cannot establish non-dispatch. Only an
 explicit `WriteError` outcome or local argument/map validation can report
 `not_sent`; invalid alias maps now include that outcome and `request_sent:false`.
+
+## Protocol capability review
+
+The [protocol research and capability matrix](protocol-research.md) records the
+2026-10-25 source review and supported scope. All canonical tools declare concrete
+data shapes in `contract/tools.json`; MCP tests validate actual results. Existing
+local diagnostics now expose backend support separately from native enablement
+and device verification. See the matrix for policy migration details.
